@@ -2,16 +2,16 @@
 """
 Mozzi DSL Compiler — main entry point.
 
-Reads a .mdsl file, parses it, validates the AST, and generates output:
+Reads a .jam file, parses it, validates the AST, and generates output:
 - Mozzi 2.0 C++ sketch (default)
 - WAV audio preview (--wav flag)
 
 Usage:
-    python -m dsl.compiler input.mdsl                    # C++ to stdout
-    python -m dsl.compiler input.mdsl -o src/sketch.cpp  # C++ to file
-    python -m dsl.compiler input.mdsl --wav -o out.wav   # WAV audio preview
-    python -m dsl.compiler input.mdsl --verbose           # show AST + diagnostics
-    python -m dsl.compiler input.mdsl --dry-run           # parse only, no codegen
+    python -m dsl.compiler input.jam                    # C++ to stdout
+    python -m dsl.compiler input.jam -o src/sketch.cpp  # C++ to file
+    python -m dsl.compiler input.jam --wav -o out.wav   # WAV audio preview
+    python -m dsl.compiler input.jam --verbose           # show AST + diagnostics
+    python -m dsl.compiler input.jam --dry-run           # parse only, no codegen
 """
 
 from __future__ import annotations
@@ -46,10 +46,10 @@ def compile_file(
     dry_run: bool = False,
     wav_mode: bool = False,
 ) -> bool:
-    """Compile a .mdsl file to a Mozzi 2.0 C++ sketch or WAV preview.
+    """Compile a .jam file to a Mozzi 2.0 C++ sketch or WAV preview.
 
     Args:
-        source_path: Path to the .mdsl input file.
+        source_path: Path to the .jam input file.
         output_path: Path to write the output. None = stdout (C++ only).
         verbose: If True, print the AST and diagnostics.
         dry_run: If True, parse and validate but skip code generation.
@@ -200,13 +200,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="mozzi-dsl",
         description=(
-            "Compile .mdsl files into Mozzi 2.0 C++ sketches for Arduino Uno, "
+            "Compile .jam files into Mozzi 2.0 C++ sketches for Arduino Uno, "
             "or render to WAV for audio preview."
         ),
     )
     parser.add_argument(
         "input",
-        help="Path to the .mdsl source file.",
+        help="Path to the .jam source file.",
     )
     parser.add_argument(
         "-o", "--output",

@@ -1,6 +1,6 @@
 ---
 name: Mozzi DSL design decisions
-description: Key architecture and grammar decisions for the .mdsl compiler — sequencer model, keyword casing, sharp-note handling, WAV backend
+description: Key architecture and grammar decisions for the .jam compiler — sequencer model, keyword casing, sharp-note handling, WAV backend
 type: project
 ---
 

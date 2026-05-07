@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3 -m dsl.compiler dsl_examples/simple_tone.mdsl -o /tmp/simple_tone.cpp)",
+      "Bash(python3 -m dsl.compiler dsl_examples/simple_tone.jam -o /tmp/simple_tone.cpp)",
       "Read(//tmp/**)",
       "Bash(python3 *)",
       "Bash(pip3 install *)",

@@ -6,16 +6,16 @@ A Python DSL that compiles human-readable music notation into Mozzi 2.0 C++ sket
 
 ```bash
 # Generate Mozzi C++ to stdout
-python3 -m dsl.compiler my_song.mdsl
+python3 -m dsl.compiler my_song.jam
 
 # Generate C++ to file
-python3 -m dsl.compiler my_song.mdsl -o src/main.cpp
+python3 -m dsl.compiler my_song.jam -o src/main.cpp
 
 # Render WAV audio preview (no Arduino needed)
-python3 -m dsl.compiler my_song.mdsl --wav -o my_song.wav
+python3 -m dsl.compiler my_song.jam --wav -o my_song.wav
 
 # Parse only (validate syntax, show AST)
-python3 -m dsl.compiler my_song.mdsl --dry-run --verbose
+python3 -m dsl.compiler my_song.jam --dry-run --verbose
 ```
 
 ### CLI Flags
@@ -31,7 +31,7 @@ python3 -m dsl.compiler my_song.mdsl --dry-run --verbose
 
 ## File Format
 
-Files use the `.mdsl` extension. Lines starting with `#` are comments. Inline comments work too — a `#` preceded by whitespace starts a comment (so `D#3` is a note, not a comment).
+Files use the `.jam` extension. Lines starting with `#` are comments. Inline comments work too — a `#` preceded by whitespace starts a comment (so `D#3` is a note, not a comment).
 
 Indentation uses spaces (tabs converted to 4 spaces). Indented blocks define instrument properties, sequence events, pattern beats, and loop bodies.
 

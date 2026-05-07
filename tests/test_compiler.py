@@ -1,4 +1,4 @@
-"""Integration tests — compile full .mdsl examples end-to-end."""
+"""Integration tests — compile full .jam examples end-to-end."""
 
 import pytest
 from pathlib import Path
@@ -24,11 +24,11 @@ class TestExamplesCompile:
     """Verify all DSL examples produce valid-looking C++ output."""
 
     @pytest.mark.parametrize("example", [
-        "simple_tone.mdsl",
-        "melody.mdsl",
-        "drums.mdsl",
-        "multi_track.mdsl",
-        "envelope.mdsl",
+        "simple_tone.jam",
+        "melody.jam",
+        "drums.jam",
+        "multi_track.jam",
+        "envelope.jam",
     ])
     def test_example_compiles(self, example: str) -> None:
         code = _compile_example(example)
@@ -48,31 +48,31 @@ class TestExamplesCompile:
         assert "float" not in audio_func
 
     def test_simple_tone_frequencies(self) -> None:
-        code = _compile_example("simple_tone.mdsl")
+        code = _compile_example("simple_tone.jam")
         assert "262" in code   # C4
         assert "330" in code   # E4
         assert "392" in code   # G4
 
     def test_drums_has_three_channels(self) -> None:
-        code = _compile_example("drums.mdsl")
+        code = _compile_example("drums.jam")
         assert "#define NUM_CHANNELS 3" in code
         assert "osc0" in code
         assert "osc1" in code
         assert "osc2" in code
 
     def test_melody_has_loop_unrolled(self) -> None:
-        code = _compile_example("melody.mdsl")
+        code = _compile_example("melody.jam")
         # LOOP 3 over a 6-event sequence = 18 events + 5 resolve events = 23
         assert "#define NUM_EVENTS 23" in code
 
     def test_multi_track_has_all_wavetables(self) -> None:
-        code = _compile_example("multi_track.mdsl")
+        code = _compile_example("multi_track.jam")
         assert "SAW2048_DATA" in code
         assert "TRIANGLE2048_DATA" in code
         assert "SIN2048_DATA" in code
 
     def test_envelope_adsr_values(self) -> None:
-        code = _compile_example("envelope.mdsl")
+        code = _compile_example("envelope.jam")
         # pad: ADSR 300 100 400 500
         assert "setTimes(300, 100, 400, 500)" in code
         # pluck: ADSR 2 80 0 60

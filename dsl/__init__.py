@@ -4,7 +4,7 @@ for Arduino Uno (ATmega328P), or renders to WAV for audio preview.
 
 Modules:
     ast_nodes    - AST node definitions (dataclasses)
-    lexer        - tokenizer for the .mdsl DSL
+    lexer        - tokenizer for the .jam DSL
     parser       - recursive-descent parser producing an AST
     semantic     - validation pass on the AST
     codegen      - AST -> Mozzi 2.0 C++ code generator
