@@ -7,7 +7,8 @@
       "Bash(pip3 install *)",
       "Bash(apt list *)",
       "Bash(dpkg -l python3-pytest)",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "Bash(python *)"
     ]
   }
 }

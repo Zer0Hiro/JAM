@@ -146,6 +146,13 @@ class CodeGenerator:
         for inst in self._instruments:
             self._needed_waves.add(inst.wave)
 
+        # Identify drum channels with tonal waves (need pitch sweep)
+        self._drum_tonal: list[bool] = [
+            inst.kind == InstrumentKind.DRUM and inst.wave != WaveType.NOISE
+            for inst in self._instruments
+        ]
+        self._has_drum_tonal = any(self._drum_tonal)
+
         # Flatten arrangement into a linear event list
         self._events: list[FlatEvent] = []
         self._flatten_arrangement(program.arrangement)
@@ -366,6 +373,13 @@ class CodeGenerator:
             lines.append("bool channelActive[1];")
         lines.append("")
 
+        # Frequency tracking for drum pitch sweep
+        if self._has_drum_tonal and n > 0:
+            lines.append("// Drum pitch sweep state")
+            lines.append("uint16_t chanFreq[NUM_CHANNELS];")
+            lines.append("uint16_t chanBaseFreq[NUM_CHANNELS];")
+            lines.append("")
+
         return "\n".join(lines)
 
     def _emit_event_table(self) -> str:
@@ -499,16 +513,30 @@ class CodeGenerator:
         if n == 0:
             lines.append("    (void)ch; (void)freq;")
         elif n == 1:
-            lines += [
-                "    osc0.setFreq((int)freq);",
-                "    env0.noteOn(true);",
-                "    channelActive[0] = true;",
-            ]
+            if self._drum_tonal[0]:
+                lines += [
+                    "    chanBaseFreq[0] = freq;",
+                    "    chanFreq[0] = freq * 5;",
+                    "    osc0.setFreq((int)chanFreq[0]);",
+                    "    env0.noteOn(true);",
+                    "    channelActive[0] = true;",
+                ]
+            else:
+                lines += [
+                    "    osc0.setFreq((int)freq);",
+                    "    env0.noteOn(true);",
+                    "    channelActive[0] = true;",
+                ]
         else:
             for i in range(n):
                 prefix = "if" if i == 0 else "} else if"
                 lines.append(f"    {prefix} (ch == {i}) {{")
-                lines.append(f"        osc{i}.setFreq((int)freq);")
+                if self._drum_tonal[i]:
+                    lines.append(f"        chanBaseFreq[{i}] = freq;")
+                    lines.append(f"        chanFreq[{i}] = freq * 5;")
+                    lines.append(f"        osc{i}.setFreq((int)chanFreq[{i}]);")
+                else:
+                    lines.append(f"        osc{i}.setFreq((int)freq);")
                 lines.append(f"        env{i}.noteOn(true);")
                 lines.append(f"        channelActive[{i}] = true;")
             lines.append("    }")
@@ -546,6 +574,17 @@ class CodeGenerator:
         for i in range(n):
             lines.append(f"    env{i}.update();")
         lines.append("")
+
+        # Drum pitch sweep — halve distance to base freq each control tick
+        if self._has_drum_tonal:
+            lines.append("    // Drum pitch sweep")
+            for i in range(n):
+                if self._drum_tonal[i]:
+                    lines.append(f"    if (channelActive[{i}] && chanFreq[{i}] > chanBaseFreq[{i}]) {{")
+                    lines.append(f"        chanFreq[{i}] = chanBaseFreq[{i}] + ((chanFreq[{i}] - chanBaseFreq[{i}]) >> 1);")
+                    lines.append(f"        osc{i}.setFreq((int)chanFreq[{i}]);")
+                    lines.append(f"    }}")
+            lines.append("")
 
         lines += [
             "    if (currentEvent >= NUM_EVENTS) {",

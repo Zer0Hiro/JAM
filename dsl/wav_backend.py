@@ -416,8 +416,32 @@ class WavRenderer:
             release_samples = int(max_release_s * WAV_SAMPLE_RATE)
             total = num_samples + release_samples
 
-            # Per-member phase accumulators
+            # Per-member synthesis state
             phases = [0.0] * len(active_members)
+            hp_prev_in = [0.0] * len(active_members)
+            hp_prev_out = [0.0] * len(active_members)
+
+            # Precompute per-member drum synthesis parameters
+            m_is_drum_noise: list[bool] = []
+            m_is_drum_tonal: list[bool] = []
+            m_hp_alpha: list[float] = []
+            m_osc_fn = []
+
+            for ev_m, idx_m in active_members:
+                inst_m = self._instruments[idx_m]
+                is_drum = inst_m.kind == InstrumentKind.DRUM
+                is_noise = inst_m.wave == WaveType.NOISE
+                m_is_drum_noise.append(is_drum and is_noise)
+                m_is_drum_tonal.append(is_drum and not is_noise)
+                m_osc_fn.append(_OSCILLATORS.get(inst_m.wave, _sin_sample))
+                if is_drum and is_noise:
+                    fc = max(20.0, ev_m.freq)
+                    rc = 1.0 / (2.0 * math.pi * fc)
+                    dt = 1.0 / WAV_SAMPLE_RATE
+                    m_hp_alpha.append(rc / (rc + dt))
+                else:
+                    m_hp_alpha.append(0.0)
+
             scale = 1.0 / (len(active_members) ** 0.5) if len(active_members) > 1 else 1.0
 
             for s in range(total):
@@ -425,18 +449,35 @@ class WavRenderer:
                 mixed = 0.0
 
                 for m_idx, (ev, idx) in enumerate(active_members):
-                    inst = self._instruments[idx]
-                    osc_fn = _OSCILLATORS.get(inst.wave, _sin_sample)
                     envelope = self._envelopes[idx]
                     volume = self._volumes[idx]
 
-                    osc_val = osc_fn(phases[m_idx])
+                    if m_is_drum_noise[m_idx]:
+                        # High-pass filtered noise — freq controls cutoff
+                        # Higher freq = brighter (hat), lower = fuller (snare)
+                        raw_noise = random.uniform(-1.0, 1.0)
+                        alpha = m_hp_alpha[m_idx]
+                        hp_prev_out[m_idx] = alpha * (
+                            hp_prev_out[m_idx] + raw_noise - hp_prev_in[m_idx]
+                        )
+                        hp_prev_in[m_idx] = raw_noise
+                        osc_val = hp_prev_out[m_idx]
+                    elif m_is_drum_tonal[m_idx]:
+                        # Pitch sweep for tonal drums (kick, toms)
+                        # Start at 5x base freq, exponential decay to base
+                        sweep_freq = ev.freq * (1.0 + 4.0 * math.exp(-t * 80.0))
+                        osc_val = m_osc_fn[m_idx](phases[m_idx])
+                        phases[m_idx] += sweep_freq / WAV_SAMPLE_RATE
+                        while phases[m_idx] >= 1.0:
+                            phases[m_idx] -= 1.0
+                    else:
+                        osc_val = m_osc_fn[m_idx](phases[m_idx])
+                        phases[m_idx] += ev.freq / WAV_SAMPLE_RATE
+                        if phases[m_idx] >= 1.0:
+                            phases[m_idx] -= 1.0
+
                     env_val = envelope.amplitude_at(t, ev.duration_s)
                     mixed += osc_val * env_val * volume
-
-                    phases[m_idx] += ev.freq / WAV_SAMPLE_RATE
-                    if phases[m_idx] >= 1.0:
-                        phases[m_idx] -= 1.0
 
                 mixed *= scale
                 sample_i = int(mixed * 24000)
