@@ -31,6 +31,7 @@ from typing import Optional
 
 from .ast_nodes import (
     ADSRParams,
+    BeatEvent,
     InstrumentDef,
     InstrumentKind,
     LoopBlock,
@@ -141,6 +142,10 @@ class CodeGenerator:
             inst.name: i for i, inst in enumerate(self._instruments)
         }
 
+        # Create voice channels for chord support
+        self._voice_channels: dict[str, list[int]] = {}
+        self._create_voice_channels(program)
+
         # Collect which wavetable types are needed
         self._needed_waves: set[WaveType] = set()
         for inst in self._instruments:
@@ -156,6 +161,42 @@ class CodeGenerator:
         # Flatten arrangement into a linear event list
         self._events: list[FlatEvent] = []
         self._flatten_arrangement(program.arrangement)
+
+    def _create_voice_channels(self, program: Program) -> None:
+        """Scan for chords and create clone instrument channels for extra voices."""
+        max_voices: dict[str, int] = {}
+        for seq in program.sequences.values():
+            for ev in seq.events:
+                if isinstance(ev, PlayNote) and ev.notes:
+                    max_voices[ev.instrument] = max(
+                        max_voices.get(ev.instrument, 1), len(ev.notes)
+                    )
+        for pat in program.patterns.values():
+            for bev in pat.events:
+                if bev.notes:
+                    max_voices[bev.instrument] = max(
+                        max_voices.get(bev.instrument, 1), len(bev.notes)
+                    )
+        for inst_name, num_voices in max_voices.items():
+            if num_voices <= 1:
+                continue
+            base_inst = program.instruments[inst_name]
+            channels = [self._inst_index[inst_name]]
+            for v in range(1, num_voices):
+                clone = InstrumentDef(
+                    name=f"{inst_name}_v{v}",
+                    kind=base_inst.kind,
+                    wave=base_inst.wave,
+                    adsr=base_inst.adsr,
+                    volume=base_inst.volume,
+                    freq=base_inst.freq,
+                    decay_ms=base_inst.decay_ms,
+                )
+                new_idx = len(self._instruments)
+                self._instruments.append(clone)
+                self._inst_index[clone.name] = new_idx
+                channels.append(new_idx)
+            self._voice_channels[inst_name] = channels
 
     # ----- flatten arrangement -----------------------------------------------
 
@@ -196,24 +237,42 @@ class CodeGenerator:
                     is_rest=True,
                 ))
             elif isinstance(ev, PlayNote):
-                ch = self._inst_index.get(ev.instrument, 0)
-                inst = self.program.instruments.get(ev.instrument)
-                freq = 0
-                note = ev.note or ""
+                if ev.notes:
+                    channels = self._voice_channels.get(
+                        ev.instrument,
+                        [self._inst_index.get(ev.instrument, 0)],
+                    )
+                    for i, note_name in enumerate(ev.notes):
+                        ch = channels[min(i, len(channels) - 1)]
+                        is_last = (i == len(ev.notes) - 1)
+                        self._events.append(FlatEvent(
+                            channel=ch,
+                            freq=note_name_to_freq_int(note_name),
+                            duration_ms=self._beats_to_ms(ev.duration_beats),
+                            is_rest=False,
+                            inst_name=ev.instrument,
+                            note_name=note_name,
+                            simultaneous_with_next=not is_last,
+                        ))
+                else:
+                    ch = self._inst_index.get(ev.instrument, 0)
+                    inst = self.program.instruments.get(ev.instrument)
+                    freq = 0
+                    note = ev.note or ""
 
-                if ev.note:
-                    freq = note_name_to_freq_int(ev.note)
-                elif inst is not None and inst.freq is not None:
-                    freq = inst.freq
+                    if ev.note:
+                        freq = note_name_to_freq_int(ev.note)
+                    elif inst is not None and inst.freq is not None:
+                        freq = inst.freq
 
-                self._events.append(FlatEvent(
-                    channel=ch,
-                    freq=freq,
-                    duration_ms=self._beats_to_ms(ev.duration_beats),
-                    is_rest=False,
-                    inst_name=ev.instrument,
-                    note_name=note,
-                ))
+                    self._events.append(FlatEvent(
+                        channel=ch,
+                        freq=freq,
+                        duration_ms=self._beats_to_ms(ev.duration_beats),
+                        is_rest=False,
+                        inst_name=ev.instrument,
+                        note_name=note,
+                    ))
 
     def _flatten_pattern(self, name: str) -> None:
         """Flatten a pattern into events, grouping simultaneous beats.
@@ -250,12 +309,26 @@ class CodeGenerator:
                 next_pos = pat.beats_per_bar + 1.0
             beat_gap_ms = self._beats_to_ms(next_pos - pos)
 
-            for ev_idx, bev in enumerate(group):
-                ch = self._inst_index.get(bev.instrument, 0)
+            # Expand chords within group into individual items
+            expanded: list[tuple[int, str, BeatEvent]] = []
+            for bev in group:
+                if bev.notes:
+                    channels = self._voice_channels.get(
+                        bev.instrument,
+                        [self._inst_index.get(bev.instrument, 0)],
+                    )
+                    for i, note_name in enumerate(bev.notes):
+                        ch = channels[min(i, len(channels) - 1)]
+                        expanded.append((ch, note_name, bev))
+                else:
+                    ch = self._inst_index.get(bev.instrument, 0)
+                    expanded.append((ch, bev.note or "", bev))
+
+            for ev_idx, (ch, note_name, bev) in enumerate(expanded):
                 inst = self.program.instruments.get(bev.instrument)
 
-                if bev.note:
-                    freq = note_name_to_freq_int(bev.note)
+                if note_name:
+                    freq = note_name_to_freq_int(note_name)
                 elif inst and inst.freq:
                     freq = inst.freq
                 else:
@@ -268,14 +341,14 @@ class CodeGenerator:
                 else:
                     dur = 80
 
-                is_last = (ev_idx == len(group) - 1)
+                is_last = (ev_idx == len(expanded) - 1)
                 self._events.append(FlatEvent(
                     channel=ch,
                     freq=freq,
                     duration_ms=beat_gap_ms if is_last else dur,
                     is_rest=False,
                     inst_name=bev.instrument,
-                    note_name=bev.note or "",
+                    note_name=note_name,
                     simultaneous_with_next=not is_last,
                 ))
 

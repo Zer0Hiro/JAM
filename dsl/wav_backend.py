@@ -27,6 +27,7 @@ from typing import Optional
 
 from .ast_nodes import (
     ADSRParams,
+    BeatEvent,
     InstrumentDef,
     InstrumentKind,
     LoopBlock,
@@ -222,7 +223,11 @@ class WavRenderer:
             inst.name: i for i, inst in enumerate(self._instruments)
         }
 
-        # Build envelopes for each instrument
+        # Create voice channels for chord support
+        self._voice_channels: dict[str, list[int]] = {}
+        self._create_voice_channels(program)
+
+        # Build envelopes for each instrument (including chord voice clones)
         self._envelopes: list[ADSREnvelope] = []
         for inst in self._instruments:
             if inst.adsr:
@@ -246,6 +251,42 @@ class WavRenderer:
         # Flatten arrangement
         self._events: list[WavEvent] = []
         self._flatten_arrangement(program.arrangement)
+
+    def _create_voice_channels(self, program: Program) -> None:
+        """Scan for chords and create clone instrument channels for extra voices."""
+        max_voices: dict[str, int] = {}
+        for seq in program.sequences.values():
+            for ev in seq.events:
+                if isinstance(ev, PlayNote) and ev.notes:
+                    max_voices[ev.instrument] = max(
+                        max_voices.get(ev.instrument, 1), len(ev.notes)
+                    )
+        for pat in program.patterns.values():
+            for bev in pat.events:
+                if bev.notes:
+                    max_voices[bev.instrument] = max(
+                        max_voices.get(bev.instrument, 1), len(bev.notes)
+                    )
+        for inst_name, num_voices in max_voices.items():
+            if num_voices <= 1:
+                continue
+            base_inst = program.instruments[inst_name]
+            channels = [self._inst_index[inst_name]]
+            for v in range(1, num_voices):
+                clone = InstrumentDef(
+                    name=f"{inst_name}_v{v}",
+                    kind=base_inst.kind,
+                    wave=base_inst.wave,
+                    adsr=base_inst.adsr,
+                    volume=base_inst.volume,
+                    freq=base_inst.freq,
+                    decay_ms=base_inst.decay_ms,
+                )
+                new_idx = len(self._instruments)
+                self._instruments.append(clone)
+                self._inst_index[clone.name] = new_idx
+                channels.append(new_idx)
+            self._voice_channels[inst_name] = channels
 
     def _beats_to_s(self, beats: float) -> float:
         """Convert beats to seconds."""
@@ -276,20 +317,36 @@ class WavRenderer:
                     is_rest=True,
                 ))
             elif isinstance(ev, PlayNote):
-                idx = self._inst_index.get(ev.instrument, 0)
-                inst = self.program.instruments.get(ev.instrument)
-                freq = 0.0
-                if ev.note:
-                    freq = note_name_to_freq(ev.note)
-                elif inst is not None and inst.freq is not None:
-                    freq = float(inst.freq)
+                if ev.notes:
+                    channels = self._voice_channels.get(
+                        ev.instrument,
+                        [self._inst_index.get(ev.instrument, 0)],
+                    )
+                    for i, note_name in enumerate(ev.notes):
+                        ch = channels[min(i, len(channels) - 1)]
+                        is_last = (i == len(ev.notes) - 1)
+                        self._events.append(WavEvent(
+                            inst_index=ch,
+                            freq=note_name_to_freq(note_name),
+                            duration_s=self._beats_to_s(ev.duration_beats),
+                            is_rest=False,
+                            simultaneous_with_next=not is_last,
+                        ))
+                else:
+                    idx = self._inst_index.get(ev.instrument, 0)
+                    inst = self.program.instruments.get(ev.instrument)
+                    freq = 0.0
+                    if ev.note:
+                        freq = note_name_to_freq(ev.note)
+                    elif inst is not None and inst.freq is not None:
+                        freq = float(inst.freq)
 
-                self._events.append(WavEvent(
-                    inst_index=idx,
-                    freq=freq,
-                    duration_s=self._beats_to_s(ev.duration_beats),
-                    is_rest=False,
-                ))
+                    self._events.append(WavEvent(
+                        inst_index=idx,
+                        freq=freq,
+                        duration_s=self._beats_to_s(ev.duration_beats),
+                        is_rest=False,
+                    ))
 
     def _flatten_pattern(self, name: str) -> None:
         """Flatten a pattern into WavEvents, grouping simultaneous beats."""
@@ -322,12 +379,26 @@ class WavRenderer:
                 next_pos = pat.beats_per_bar + 1.0
             beat_gap_s = self._beats_to_s(next_pos - pos)
 
-            for ev_idx, bev in enumerate(group):
-                idx = self._inst_index.get(bev.instrument, 0)
+            # Expand chords within group into individual items
+            expanded: list[tuple[int, str, BeatEvent]] = []
+            for bev in group:
+                if bev.notes:
+                    channels = self._voice_channels.get(
+                        bev.instrument,
+                        [self._inst_index.get(bev.instrument, 0)],
+                    )
+                    for i, note_name in enumerate(bev.notes):
+                        ch = channels[min(i, len(channels) - 1)]
+                        expanded.append((ch, note_name, bev))
+                else:
+                    ch = self._inst_index.get(bev.instrument, 0)
+                    expanded.append((ch, bev.note or "", bev))
+
+            for ev_idx, (idx, note_name, bev) in enumerate(expanded):
                 inst = self.program.instruments.get(bev.instrument)
 
-                if bev.note:
-                    freq = note_name_to_freq(bev.note)
+                if note_name:
+                    freq = note_name_to_freq(note_name)
                 elif inst and inst.freq:
                     freq = float(inst.freq)
                 else:
@@ -340,7 +411,7 @@ class WavRenderer:
                 else:
                     dur = 0.08
 
-                is_last = (ev_idx == len(group) - 1)
+                is_last = (ev_idx == len(expanded) - 1)
                 self._events.append(WavEvent(
                     inst_index=idx,
                     freq=freq,

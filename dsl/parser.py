@@ -302,15 +302,28 @@ class Parser:
                 line = kw.line
                 inst_tok = self._expect(TokenType.IDENT)
 
-                # Note is optional for drums
                 note: Optional[str] = None
-                if self._peek_type() == TokenType.NOTE:
+                chord_notes: Optional[list[str]] = None
+
+                if self._peek_type() == TokenType.LBRACKET:
+                    self._advance()
+                    chord_notes = []
+                    while self._peek_type() == TokenType.NOTE:
+                        chord_notes.append(self._advance().value)
+                    self._expect(TokenType.RBRACKET)
+                    if len(chord_notes) < 2:
+                        raise ParseError(
+                            "Chord must have at least 2 notes",
+                            self._current(),
+                        )
+                elif self._peek_type() == TokenType.NOTE:
                     note = self._advance().value
 
                 dur = float(self._expect(TokenType.NUMBER).value)
                 seq.events.append(PlayNote(
                     instrument=inst_tok.value,
                     note=note,
+                    notes=chord_notes,
                     duration_beats=dur,
                     line=line,
                 ))
@@ -361,7 +374,20 @@ class Parser:
                 inst_tok = self._expect(TokenType.IDENT)
 
                 note: Optional[str] = None
-                if self._peek_type() == TokenType.NOTE:
+                chord_notes: Optional[list[str]] = None
+
+                if self._peek_type() == TokenType.LBRACKET:
+                    self._advance()
+                    chord_notes = []
+                    while self._peek_type() == TokenType.NOTE:
+                        chord_notes.append(self._advance().value)
+                    self._expect(TokenType.RBRACKET)
+                    if len(chord_notes) < 2:
+                        raise ParseError(
+                            "Chord must have at least 2 notes",
+                            self._current(),
+                        )
+                elif self._peek_type() == TokenType.NOTE:
                     note = self._advance().value
 
                 duration_beats: Optional[float] = None
@@ -372,6 +398,7 @@ class Parser:
                     beat_position=pos,
                     instrument=inst_tok.value,
                     note=note,
+                    notes=chord_notes,
                     duration_beats=duration_beats,
                     line=kw.line,
                 ))

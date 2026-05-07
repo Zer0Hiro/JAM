@@ -90,16 +90,18 @@ class InstrumentDef:
 
 @dataclass
 class PlayNote:
-    """A PLAY event: trigger an instrument with a note and duration.
+    """A PLAY event: trigger an instrument with a note/chord and duration.
 
     Attributes:
         instrument: Name of the instrument to play.
         note: Note name in scientific notation (e.g. "C3") or None for drums.
+        notes: List of notes for a chord (e.g. ["C4", "E4", "G4"]).
         duration_beats: Duration in beats (relative to BPM).
         line: Source line number for error reporting.
     """
     instrument: str
     note: Optional[str] = None
+    notes: Optional[list[str]] = None
     duration_beats: float = 1.0
     line: int = 0
 
@@ -124,12 +126,14 @@ class BeatEvent:
         beat_position: Float beat position (1-based, e.g. 1, 2.5, 3).
         instrument: Instrument name to trigger.
         note: Note name for melodic instruments (None = use instrument's fixed freq).
+        notes: List of notes for a chord (e.g. ["C4", "E4", "G4"]).
         duration_beats: Duration in beats (None = use instrument's decay_ms or default).
         line: Source line number.
     """
     beat_position: float = 1.0
     instrument: str = ""
     note: Optional[str] = None
+    notes: Optional[list[str]] = None
     duration_beats: Optional[float] = None
     line: int = 0
 

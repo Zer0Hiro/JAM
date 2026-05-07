@@ -154,6 +154,27 @@ def validate(program: Program) -> ValidationResult:
                                 "is outside the typical piano range",
                                 ev.line,
                             )
+                if ev.notes:
+                    if len(ev.notes) > 4:
+                        result.warn(
+                            f"Sequence '{seq_name}': chord with {len(ev.notes)} notes "
+                            "— ATmega328 may not have enough RAM for this many voices",
+                            ev.line,
+                        )
+                    for cn in ev.notes:
+                        if not is_valid_note(cn):
+                            result.error(
+                                f"Sequence '{seq_name}': invalid chord note '{cn}'",
+                                ev.line,
+                            )
+                        else:
+                            midi = note_name_to_midi(cn)
+                            if midi < 21 or midi > 108:
+                                result.warn(
+                                    f"Sequence '{seq_name}': chord note '{cn}' (MIDI {midi}) "
+                                    "is outside the typical piano range",
+                                    ev.line,
+                                )
                 if ev.duration_beats <= 0:
                     result.error(
                         f"Sequence '{seq_name}': duration must be positive",
@@ -182,6 +203,27 @@ def validate(program: Program) -> ValidationResult:
                             "is outside the typical piano range",
                             ev.line,
                         )
+            if ev.notes:
+                if len(ev.notes) > 4:
+                    result.warn(
+                        f"Pattern '{pat_name}': chord with {len(ev.notes)} notes "
+                        "— ATmega328 may not have enough RAM for this many voices",
+                        ev.line,
+                    )
+                for cn in ev.notes:
+                    if not is_valid_note(cn):
+                        result.error(
+                            f"Pattern '{pat_name}': invalid chord note '{cn}'",
+                            ev.line,
+                        )
+                    else:
+                        midi = note_name_to_midi(cn)
+                        if midi < 21 or midi > 108:
+                            result.warn(
+                                f"Pattern '{pat_name}': chord note '{cn}' (MIDI {midi}) "
+                                "is outside the typical piano range",
+                                ev.line,
+                            )
             if ev.duration_beats is not None and ev.duration_beats <= 0:
                 result.error(
                     f"Pattern '{pat_name}': beat duration must be positive",
@@ -189,7 +231,7 @@ def validate(program: Program) -> ValidationResult:
                 )
             inst = program.instruments.get(ev.instrument)
             if (inst and inst.kind == InstrumentKind.SYNTH
-                    and ev.note is None and inst.freq is None):
+                    and ev.note is None and ev.notes is None and inst.freq is None):
                 result.warn(
                     f"Pattern '{pat_name}': synth '{ev.instrument}' has no note or FREQ "
                     "— will use default 60Hz",

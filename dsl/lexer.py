@@ -40,6 +40,8 @@ class TokenType(Enum):
     IDENT = auto()
     # Punctuation
     COLON = auto()
+    LBRACKET = auto()
+    RBRACKET = auto()
     # Structure
     NEWLINE = auto()
     INDENT = auto()
@@ -211,9 +213,17 @@ def _tokenize_line(line: str, line_num: int, col_offset: int, tokens: list[Token
             pos += 1
             continue
 
-        # Colon
+        # Punctuation
         if ch == ":":
             tokens.append(Token(TokenType.COLON, ":", line_num, col_offset + pos))
+            pos += 1
+            continue
+        if ch == "[":
+            tokens.append(Token(TokenType.LBRACKET, "[", line_num, col_offset + pos))
+            pos += 1
+            continue
+        if ch == "]":
+            tokens.append(Token(TokenType.RBRACKET, "]", line_num, col_offset + pos))
             pos += 1
             continue
 
@@ -221,7 +231,7 @@ def _tokenize_line(line: str, line_num: int, col_offset: int, tokens: list[Token
         # '#' is included because inline comments are already stripped;
         # any '#' here is part of a note name like D#3.
         word_start = pos
-        while pos < length and line[pos] not in (" ", "\t", ":"):
+        while pos < length and line[pos] not in (" ", "\t", ":", "[", "]"):
             pos += 1
         word = line[word_start:pos]
         col = col_offset + word_start
