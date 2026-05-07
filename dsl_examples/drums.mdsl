@@ -1,0 +1,39 @@
+# drums.mdsl
+# A basic drum pattern — kick on 1 and 3, snare on 2 and 4, hat on every beat.
+# Demonstrates DRUM instruments and PATTERN blocks.
+
+BPM 110
+
+INSTRUMENT kick:
+    TYPE DRUM
+    WAVE SIN
+    FREQ 60
+    DECAY 80
+    VOLUME 255
+
+INSTRUMENT snare:
+    TYPE DRUM
+    WAVE NOISE
+    FREQ 200
+    DECAY 60
+    VOLUME 220
+
+INSTRUMENT hat:
+    TYPE DRUM
+    WAVE NOISE
+    FREQ 800
+    DECAY 30
+    VOLUME 140
+
+PATTERN basic_beat:
+    BEAT 1: kick
+    BEAT 1: hat
+    BEAT 2: snare
+    BEAT 2: hat
+    BEAT 3: kick
+    BEAT 3: hat
+    BEAT 4: snare
+    BEAT 4: hat
+
+LOOP 4:
+    PLAY_PATTERN basic_beat

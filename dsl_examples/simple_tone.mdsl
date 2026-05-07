@@ -1,0 +1,20 @@
+# simple_tone.mdsl
+# A single sustained tone — the "Hello World" of Mozzi DSL.
+# Plays a sine wave at C4 for 2 beats, rests 1 beat, then plays E4.
+
+BPM 120
+
+INSTRUMENT tone:
+    TYPE SYNTH
+    WAVE SIN
+    ADSR 10 50 200 100
+    VOLUME 200
+
+SEQUENCE melody:
+    PLAY tone C4 2
+    REST 1
+    PLAY tone E4 2
+    REST 1
+    PLAY tone G4 2
+
+PLAY_SEQUENCE melody

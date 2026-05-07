@@ -1,0 +1,60 @@
+# Global Config
+BPM 120
+AUDIO_RATE 16384
+
+# --- INSTRUMENTS ---
+
+INSTRUMENT sans_lead:
+    TYPE SYNTH
+    WAVE SQUARE     # Square wave gives that hollow retro sound
+    ADSR 2 60 0 40  # Very short ADSR for "staccato" notes
+    VOLUME 180
+
+INSTRUMENT kick:
+    TYPE DRUM
+    WAVE SIN        # SIN wave for a clean, deep thump
+    FREQ 55
+    DECAY 100
+    VOLUME 255
+
+INSTRUMENT snare:
+    TYPE DRUM
+    WAVE NOISE      # NOISE for the "snap" of the snare
+    FREQ 900
+    DECAY 50
+    VOLUME 170
+
+# --- PATTERNS ---
+# We use PATTERN to "mix" the lead and drums simultaneously
+
+PATTERN megalo_riff:
+    # Beat 1: Kick + Lead (The iconic D-D start)
+    BEAT 1: kick
+    BEAT 1: sans_lead       # Note: D3
+    BEAT 1.25: sans_lead    # Note: D3
+
+    # Beat 2: Snare + High Lead
+    BEAT 2: snare
+    BEAT 2: sans_lead       # Note: D4
+
+    # Beat 3: Kick + Melodic descent
+    BEAT 3: kick
+    BEAT 3: sans_lead       # Note: A3
+    BEAT 3.75: sans_lead    # Note: G#3
+
+    # Beat 4: Snare + Melodic descent
+    BEAT 4: snare
+    BEAT 4: sans_lead       # Note: G3
+    BEAT 4.5: sans_lead     # Note: F3
+
+PATTERN megalo_finish:
+    BEAT 1: kick
+    BEAT 1: sans_lead       # Note: D3
+    BEAT 1.5: sans_lead     # Note: F3
+    BEAT 1.75: sans_lead    # Note: G3
+
+# --- ARRANGEMENT ---
+
+LOOP 4:
+    PLAY_PATTERN megalo_riff
+    PLAY_PATTERN megalo_finish

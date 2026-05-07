@@ -1,0 +1,37 @@
+# envelope.mdsl
+# Envelope and effects demo — showcases ADSR shaping on different instruments.
+# A pad with slow attack/release and a pluck with fast attack and short decay.
+
+BPM 90
+
+INSTRUMENT pad:
+    TYPE SYNTH
+    WAVE SIN
+    ADSR 300 100 400 500
+    VOLUME 160
+
+INSTRUMENT pluck:
+    TYPE SYNTH
+    WAVE SAW
+    ADSR 2 80 0 60
+    VOLUME 200
+
+SEQUENCE pad_chords:
+    PLAY pad C4 4
+    PLAY pad E4 4
+    PLAY pad G4 4
+    PLAY pad C5 4
+
+SEQUENCE pluck_line:
+    PLAY pluck C5 0.25
+    REST 0.25
+    PLAY pluck E5 0.25
+    REST 0.25
+    PLAY pluck G5 0.25
+    REST 0.25
+    PLAY pluck C6 0.25
+    REST 0.25
+
+PLAY_SEQUENCE pad_chords
+LOOP 4:
+    PLAY_SEQUENCE pluck_line
