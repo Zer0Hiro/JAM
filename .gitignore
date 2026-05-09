@@ -5,3 +5,5 @@
 CLAUDE.md
 .claude
 temp
+/src/main.cpp
+/dsl/__pycache__/
