@@ -8,6 +8,8 @@ from dsl.ast_nodes import (
     PlayNote,
     RestEvent,
     PlaySequenceRef,
+    PlayPatternRef,
+    PlayTogetherBlock,
     LoopBlock,
 )
 
@@ -180,6 +182,92 @@ LOOP 3:
         assert isinstance(loop, LoopBlock)
         assert loop.count == 3
         assert len(loop.body) == 1
+
+
+class TestParsePlayTogether:
+    """Test parsing of PLAY_TOGETHER blocks."""
+
+    def test_play_together_basic(self) -> None:
+        source = """
+INSTRUMENT s:
+    TYPE SYNTH
+    WAVE SIN
+    VOLUME 200
+
+SEQUENCE a:
+    PLAY s C4 1
+
+SEQUENCE b:
+    PLAY s E4 1
+
+PLAY_TOGETHER:
+    PLAY_SEQUENCE a
+    PLAY_SEQUENCE b
+"""
+        prog = parse(source)
+        assert len(prog.arrangement) == 1
+        block = prog.arrangement[0]
+        assert isinstance(block, PlayTogetherBlock)
+        assert len(block.body) == 2
+        assert isinstance(block.body[0], PlaySequenceRef)
+        assert isinstance(block.body[1], PlaySequenceRef)
+        assert block.body[0].sequence_name == "a"
+        assert block.body[1].sequence_name == "b"
+
+    def test_play_together_with_pattern(self) -> None:
+        source = """
+INSTRUMENT kick:
+    TYPE DRUM
+    WAVE SIN
+    FREQ 60
+    DECAY 80
+
+INSTRUMENT s:
+    TYPE SYNTH
+    WAVE SIN
+    VOLUME 200
+
+SEQUENCE melody:
+    PLAY s C4 1
+
+PATTERN beat:
+    BEAT 1: kick
+
+PLAY_TOGETHER:
+    PLAY_SEQUENCE melody
+    PLAY_PATTERN beat
+"""
+        prog = parse(source)
+        block = prog.arrangement[0]
+        assert isinstance(block, PlayTogetherBlock)
+        assert isinstance(block.body[0], PlaySequenceRef)
+        assert isinstance(block.body[1], PlayPatternRef)
+
+    def test_play_together_inside_loop(self) -> None:
+        source = """
+INSTRUMENT s:
+    TYPE SYNTH
+    WAVE SIN
+    VOLUME 200
+
+SEQUENCE a:
+    PLAY s C4 1
+
+SEQUENCE b:
+    PLAY s E4 1
+
+LOOP 3:
+    PLAY_TOGETHER:
+        PLAY_SEQUENCE a
+        PLAY_SEQUENCE b
+"""
+        prog = parse(source)
+        assert len(prog.arrangement) == 1
+        loop = prog.arrangement[0]
+        assert isinstance(loop, LoopBlock)
+        assert loop.count == 3
+        assert len(loop.body) == 1
+        assert isinstance(loop.body[0], PlayTogetherBlock)
 
 
 class TestParseErrors:

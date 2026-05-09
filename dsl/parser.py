@@ -39,6 +39,7 @@ from .ast_nodes import (
     PlayNote,
     PlayPatternRef,
     PlaySequenceRef,
+    PlayTogetherBlock,
     Program,
     RestEvent,
     Sequence,
@@ -166,7 +167,7 @@ class Parser:
                 elif kw == "PATTERN":
                     pat = self._parse_pattern()
                     program.patterns[pat.name] = pat
-                elif kw in ("LOOP", "PLAY_SEQUENCE", "PLAY_PATTERN"):
+                elif kw in ("LOOP", "PLAY_SEQUENCE", "PLAY_PATTERN", "PLAY_TOGETHER"):
                     item = self._parse_arrangement_item()
                     program.arrangement.append(item)
                 else:
@@ -413,12 +414,14 @@ class Parser:
 
     # ----- arrangement -------------------------------------------------------
 
-    def _parse_arrangement_item(self) -> PlaySequenceRef | PlayPatternRef | LoopBlock:
-        """Parse one arrangement item (LOOP block, PLAY_SEQUENCE, or PLAY_PATTERN)."""
+    def _parse_arrangement_item(self) -> PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock:
+        """Parse one arrangement item (LOOP, PLAY_SEQUENCE, PLAY_PATTERN, or PLAY_TOGETHER)."""
         tok = self._current()
 
         if tok.type == TokenType.KEYWORD and tok.value == "LOOP":
             return self._parse_loop_block()
+        elif tok.type == TokenType.KEYWORD and tok.value == "PLAY_TOGETHER":
+            return self._parse_play_together()
         elif tok.type == TokenType.KEYWORD and tok.value == "PLAY_SEQUENCE":
             self._advance()
             name = self._expect(TokenType.IDENT).value
@@ -458,6 +461,33 @@ class Parser:
 
         self._expect(TokenType.DEDENT)
         return loop
+
+    def _parse_play_together(self) -> PlayTogetherBlock:
+        """Parse a PLAY_TOGETHER block.
+
+        ::
+
+            PLAY_TOGETHER:
+                PLAY_SEQUENCE melody
+                PLAY_SEQUENCE bassline
+                PLAY_PATTERN drums
+        """
+        tok = self._expect(TokenType.KEYWORD, "PLAY_TOGETHER")
+        self._expect(TokenType.COLON)
+        self._expect(TokenType.NEWLINE)
+        self._expect(TokenType.INDENT)
+
+        block = PlayTogetherBlock(line=tok.line)
+
+        while self._peek_type() != TokenType.DEDENT:
+            self._skip_newlines()
+            if self._peek_type() == TokenType.DEDENT:
+                break
+            item = self._parse_arrangement_item()
+            block.body.append(item)
+
+        self._expect(TokenType.DEDENT)
+        return block
 
 
 def parse(source: str) -> Program:

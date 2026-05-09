@@ -1,0 +1,59 @@
+# Play Together Demo
+# Bass, melody, and drums all playing at the same time
+# using the PLAY_TOGETHER block.
+
+BPM 120
+
+INSTRUMENT bass:
+    TYPE SYNTH
+    WAVE SAW
+    ADSR 5 40 300 120
+    VOLUME 220
+
+INSTRUMENT lead:
+    TYPE SYNTH
+    WAVE TRIANGLE
+    ADSR 10 30 200 100
+    VOLUME 180
+
+INSTRUMENT kick:
+    TYPE DRUM
+    WAVE SIN
+    FREQ 55
+    DECAY 100
+    VOLUME 255
+
+INSTRUMENT hat:
+    TYPE DRUM
+    WAVE NOISE
+    FREQ 800
+    DECAY 30
+    VOLUME 140
+
+SEQUENCE bassline:
+    PLAY bass C2 1
+    PLAY bass C2 1
+    PLAY bass G2 1
+    PLAY bass F2 1
+
+SEQUENCE melody:
+    PLAY lead E4 0.5
+    PLAY lead G4 0.5
+    PLAY lead A4 1
+    PLAY lead G4 0.5
+    PLAY lead E4 0.5
+    PLAY lead D4 1
+
+PATTERN beat:
+    BEAT 1: kick
+    BEAT 1: hat
+    BEAT 2: hat
+    BEAT 3: kick
+    BEAT 3: hat
+    BEAT 4: hat
+
+LOOP 2:
+    PLAY_TOGETHER:
+        PLAY_SEQUENCE bassline
+        PLAY_SEQUENCE melody
+        PLAY_PATTERN beat

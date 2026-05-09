@@ -35,6 +35,7 @@ from .ast_nodes import (
     PlayNote,
     PlayPatternRef,
     PlaySequenceRef,
+    PlayTogetherBlock,
     Program,
     RestEvent,
     WaveType,
@@ -302,6 +303,8 @@ class WavRenderer:
             elif isinstance(item, LoopBlock):
                 for _ in range(item.count):
                     self._flatten_arrangement(item.body)
+            elif isinstance(item, PlayTogetherBlock):
+                self._flatten_play_together(item)
 
     def _flatten_sequence(self, name: str) -> None:
         """Flatten a named sequence into WavEvents."""
@@ -421,6 +424,84 @@ class WavRenderer:
                 ))
 
             current_beat = next_pos
+
+    @staticmethod
+    def _events_to_absolute(events: list[WavEvent]) -> list[tuple[float, WavEvent]]:
+        """Convert sequential WavEvents to (absolute_time_s, event) pairs."""
+        abs_events: list[tuple[float, WavEvent]] = []
+        t = 0.0
+        for ev in events:
+            if ev.is_rest:
+                if not ev.simultaneous_with_next:
+                    t += ev.duration_s
+            else:
+                abs_events.append((t, ev))
+                if not ev.simultaneous_with_next:
+                    t += ev.duration_s
+        return abs_events
+
+    def _flatten_play_together(self, block: PlayTogetherBlock) -> None:
+        """Flatten a PLAY_TOGETHER block by merging child timelines."""
+        child_timelines: list[list[WavEvent]] = []
+        for child in block.body:
+            saved = list(self._events)
+            self._events = []
+            if isinstance(child, PlaySequenceRef):
+                self._flatten_sequence(child.sequence_name)
+            elif isinstance(child, PlayPatternRef):
+                self._flatten_pattern(child.pattern_name)
+            elif isinstance(child, LoopBlock):
+                for _ in range(child.count):
+                    self._flatten_arrangement(child.body)
+            elif isinstance(child, PlayTogetherBlock):
+                self._flatten_play_together(child)
+            child_timelines.append(self._events)
+            self._events = saved
+
+        all_abs: list[tuple[float, WavEvent]] = []
+        for child_events in child_timelines:
+            all_abs.extend(self._events_to_absolute(child_events))
+
+        all_abs.sort(key=lambda x: x[0])
+        if not all_abs:
+            return
+
+        from itertools import groupby
+
+        groups: list[tuple[float, list[WavEvent]]] = []
+        for t, grp in groupby(all_abs, key=lambda x: round(x[0], 6)):
+            groups.append((t, [ev for _, ev in grp]))
+
+        for g_idx, (start, group) in enumerate(groups):
+            if g_idx == 0 and start > 0.001:
+                self._events.append(WavEvent(
+                    inst_index=0, freq=0.0, duration_s=start, is_rest=True,
+                ))
+            elif g_idx > 0:
+                gap = start - groups[g_idx - 1][0]
+                prev_group = groups[g_idx - 1][1]
+                prev_duration = prev_group[-1].duration_s if prev_group else 0.0
+                rest_gap = gap - prev_duration
+                if rest_gap > 0.001:
+                    self._events.append(WavEvent(
+                        inst_index=0, freq=0.0, duration_s=rest_gap, is_rest=True,
+                    ))
+
+            if g_idx + 1 < len(groups):
+                next_start = groups[g_idx + 1][0]
+            else:
+                next_start = start + max(ev.duration_s for ev in group)
+            beat_gap = max(0.001, next_start - start)
+
+            for ev_idx, ev in enumerate(group):
+                is_last = ev_idx == len(group) - 1
+                self._events.append(WavEvent(
+                    inst_index=ev.inst_index,
+                    freq=ev.freq,
+                    duration_s=beat_gap if is_last else ev.duration_s,
+                    is_rest=False,
+                    simultaneous_with_next=not is_last,
+                ))
 
     def render(self, output_path: str) -> None:
         """Render the composition to a WAV file.

@@ -21,6 +21,7 @@ from .ast_nodes import (
     PlayNote,
     PlayPatternRef,
     PlaySequenceRef,
+    PlayTogetherBlock,
     Program,
 )
 from .notes import is_valid_note, note_name_to_midi
@@ -284,4 +285,11 @@ def _check_arrangement(
         elif isinstance(item, LoopBlock):
             if item.count <= 0:
                 result.error("LOOP count must be positive", item.line)
+            _check_arrangement(item.body, seq_names, pat_names, result)
+        elif isinstance(item, PlayTogetherBlock):
+            if len(item.body) < 2:
+                result.warn(
+                    "PLAY_TOGETHER with fewer than 2 items — use PLAY_SEQUENCE/PLAY_PATTERN directly",
+                    item.line,
+                )
             _check_arrangement(item.body, seq_names, pat_names, result)

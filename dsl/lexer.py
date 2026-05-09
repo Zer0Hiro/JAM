@@ -54,7 +54,7 @@ KEYWORDS: set[str] = {
     "BPM", "AUDIO_RATE", "CONTROL_RATE",
     "INSTRUMENT", "TYPE", "WAVE", "ADSR", "VOLUME", "FREQ", "DECAY",
     "SEQUENCE", "PATTERN", "PLAY", "REST", "BEAT",
-    "LOOP", "PLAY_SEQUENCE", "PLAY_PATTERN",
+    "LOOP", "PLAY_SEQUENCE", "PLAY_PATTERN", "PLAY_TOGETHER",
     # Instrument-kind keywords used as values
     "SYNTH", "DRUM",
     # Waveform keywords used as values

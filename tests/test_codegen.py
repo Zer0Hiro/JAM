@@ -153,6 +153,54 @@ class TestGenerateMultiChannel:
         assert "sample >>=" in code
 
 
+PLAY_TOGETHER_SOURCE = """
+BPM 120
+
+INSTRUMENT bass:
+    TYPE SYNTH
+    WAVE SAW
+    VOLUME 220
+
+INSTRUMENT lead:
+    TYPE SYNTH
+    WAVE TRIANGLE
+    VOLUME 180
+
+SEQUENCE bassline:
+    PLAY bass C2 1
+    PLAY bass G2 1
+
+SEQUENCE melody:
+    PLAY lead E4 0.5
+    PLAY lead G4 0.5
+    PLAY lead A4 1
+
+PLAY_TOGETHER:
+    PLAY_SEQUENCE bassline
+    PLAY_SEQUENCE melody
+"""
+
+
+class TestGeneratePlayTogether:
+    """Test PLAY_TOGETHER code generation."""
+
+    def test_simultaneous_events_generated(self) -> None:
+        code = generate(parse(PLAY_TOGETHER_SOURCE))
+        assert "[SIM]" in code
+
+    def test_both_channels_present(self) -> None:
+        code = generate(parse(PLAY_TOGETHER_SOURCE))
+        assert "bass" in code
+        assert "lead" in code
+
+    def test_first_events_simultaneous(self) -> None:
+        code = generate(parse(PLAY_TOGETHER_SOURCE))
+        lines = code.split("\n")
+        event_lines = [l for l in lines if "// bass" in l or "// lead" in l]
+        assert len(event_lines) >= 2
+        assert "[SIM]" in event_lines[0]
+
+
 class TestGenerateConfigMacros:
     """Test that config macros are emitted before includes."""
 

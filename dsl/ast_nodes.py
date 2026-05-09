@@ -206,6 +206,18 @@ class LoopBlock:
         line: Source line number.
     """
     count: int = 1
+    body: list[PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock] = field(default_factory=list)
+    line: int = 0
+
+
+@dataclass
+class PlayTogetherBlock:
+    """A PLAY_TOGETHER: ... block — plays all children simultaneously.
+
+    Attributes:
+        body: List of arrangement items to play at the same time.
+        line: Source line number.
+    """
     body: list[PlaySequenceRef | PlayPatternRef | LoopBlock] = field(default_factory=list)
     line: int = 0
 
@@ -229,4 +241,4 @@ class Program:
     instruments: dict[str, InstrumentDef] = field(default_factory=dict)
     sequences: dict[str, Sequence] = field(default_factory=dict)
     patterns: dict[str, Pattern] = field(default_factory=dict)
-    arrangement: list[PlaySequenceRef | PlayPatternRef | LoopBlock] = field(default_factory=list)
+    arrangement: list[PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock] = field(default_factory=list)

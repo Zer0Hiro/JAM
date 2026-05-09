@@ -39,6 +39,7 @@ from .ast_nodes import (
     PlayNote,
     PlayPatternRef,
     PlaySequenceRef,
+    PlayTogetherBlock,
     Program,
     RestEvent,
     Sequence,
@@ -224,6 +225,8 @@ class CodeGenerator:
             elif isinstance(item, LoopBlock):
                 for _ in range(item.count):
                     self._flatten_arrangement(item.body)
+            elif isinstance(item, PlayTogetherBlock):
+                self._flatten_play_together(item)
 
     def _flatten_sequence(self, name: str) -> None:
         """Flatten a named sequence into events."""
@@ -355,6 +358,88 @@ class CodeGenerator:
                 ))
 
             current_beat = next_pos
+
+    # ----- play together -----------------------------------------------------
+
+    @staticmethod
+    def _events_to_absolute(events: list[FlatEvent]) -> list[tuple[int, FlatEvent]]:
+        """Convert sequential FlatEvents to (absolute_time_ms, event) pairs."""
+        abs_events: list[tuple[int, FlatEvent]] = []
+        t = 0
+        for ev in events:
+            if ev.is_rest:
+                if not ev.simultaneous_with_next:
+                    t += ev.duration_ms
+            else:
+                abs_events.append((t, ev))
+                if not ev.simultaneous_with_next:
+                    t += ev.duration_ms
+        return abs_events
+
+    def _flatten_play_together(self, block: PlayTogetherBlock) -> None:
+        """Flatten a PLAY_TOGETHER block by merging child timelines."""
+        child_timelines: list[list[FlatEvent]] = []
+        for child in block.body:
+            saved = len(self._events)
+            if isinstance(child, PlaySequenceRef):
+                self._flatten_sequence(child.sequence_name)
+            elif isinstance(child, PlayPatternRef):
+                self._flatten_pattern(child.pattern_name)
+            elif isinstance(child, LoopBlock):
+                for _ in range(child.count):
+                    self._flatten_arrangement(child.body)
+            elif isinstance(child, PlayTogetherBlock):
+                self._flatten_play_together(child)
+            child_events = self._events[saved:]
+            self._events = self._events[:saved]
+            child_timelines.append(child_events)
+
+        all_abs: list[tuple[int, FlatEvent]] = []
+        for child_events in child_timelines:
+            all_abs.extend(self._events_to_absolute(child_events))
+
+        all_abs.sort(key=lambda x: x[0])
+        if not all_abs:
+            return
+
+        from itertools import groupby
+
+        groups: list[tuple[int, list[FlatEvent]]] = []
+        for t, grp in groupby(all_abs, key=lambda x: x[0]):
+            groups.append((t, [ev for _, ev in grp]))
+
+        for g_idx, (start, group) in enumerate(groups):
+            if g_idx == 0 and start > 0:
+                self._events.append(FlatEvent(
+                    channel=0, freq=0, duration_ms=start, is_rest=True,
+                ))
+            elif g_idx > 0:
+                gap = start - groups[g_idx - 1][0]
+                prev_group = groups[g_idx - 1][1]
+                prev_duration = prev_group[-1].duration_ms if prev_group else 0
+                rest_gap = gap - prev_duration
+                if rest_gap > 0:
+                    self._events.append(FlatEvent(
+                        channel=0, freq=0, duration_ms=rest_gap, is_rest=True,
+                    ))
+
+            if g_idx + 1 < len(groups):
+                next_start = groups[g_idx + 1][0]
+            else:
+                next_start = start + max(ev.duration_ms for ev in group)
+            beat_gap = max(1, next_start - start)
+
+            for ev_idx, ev in enumerate(group):
+                is_last = ev_idx == len(group) - 1
+                self._events.append(FlatEvent(
+                    channel=ev.channel,
+                    freq=ev.freq,
+                    duration_ms=beat_gap if is_last else ev.duration_ms,
+                    is_rest=False,
+                    inst_name=ev.inst_name,
+                    note_name=ev.note_name,
+                    simultaneous_with_next=not is_last,
+                ))
 
     # ----- C++ emission ------------------------------------------------------
 

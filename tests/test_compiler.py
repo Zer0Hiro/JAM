@@ -29,6 +29,7 @@ class TestExamplesCompile:
         "drums.jam",
         "multi_track.jam",
         "envelope.jam",
+        "play_together.jam",
     ])
     def test_example_compiles(self, example: str) -> None:
         code = _compile_example(example)
