@@ -607,10 +607,51 @@ class WavRenderer:
             num_samples = max(1, int(last_event.duration_s * WAV_SAMPLE_RATE))
 
             if all(ev.is_rest or ev.freq <= 0 for ev in group) or n_instruments == 0:
-                if self._is_stereo:
-                    all_samples.extend([0] * (num_samples * 2))
-                else:
-                    all_samples.extend([0] * num_samples)
+                has_active_delay = any(
+                    di in delay_bufs and any(abs(v) > 0.001 for v in delay_bufs[di])
+                    for di in delay_bufs
+                )
+                if not has_active_delay:
+                    if self._is_stereo:
+                        all_samples.extend([0] * (num_samples * 2))
+                    else:
+                        all_samples.extend([0] * num_samples)
+                    continue
+
+                # Process delay tails during REST
+                for s in range(num_samples):
+                    mixed_l = 0.0
+                    mixed_r = 0.0
+                    mixed = 0.0
+                    for di in delay_bufs:
+                        inst = self._instruments[di]
+                        buf = delay_bufs[di]
+                        pos = delay_positions[di]
+                        delayed = buf[pos]
+                        fb = inst.delay_feedback / 255.0
+                        wet = delayed * fb
+                        buf[pos] = wet
+                        delay_positions[di] = (pos + 1) % len(buf)
+                        sample_val = wet
+                        if self._is_stereo:
+                            pan = self._pans[di]
+                            left_gain = max(0.0, 1.0 - pan) if pan > 0 else 1.0
+                            right_gain = max(0.0, 1.0 + pan) if pan < 0 else 1.0
+                            mixed_l += sample_val * left_gain
+                            mixed_r += sample_val * right_gain
+                        else:
+                            mixed += sample_val
+                    if self._is_stereo:
+                        mixed_l *= master_volume
+                        mixed_r *= master_volume
+                        sl = int(mixed_l * 24000)
+                        sr = int(mixed_r * 24000)
+                        all_samples.append(max(-32768, min(32767, sl)))
+                        all_samples.append(max(-32768, min(32767, sr)))
+                    else:
+                        mixed *= master_volume
+                        sv = int(mixed * 24000)
+                        all_samples.append(max(-32768, min(32767, sv)))
                 continue
 
             max_release_s = 0.0

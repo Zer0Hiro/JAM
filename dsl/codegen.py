@@ -254,13 +254,14 @@ class CodeGenerator:
                 self._flatten_play_together(item)
             elif isinstance(item, BPMChange):
                 self.config.bpm = item.bpm
+                new_ms = 60000 // item.bpm
                 self._events.append(FlatEvent(
-                    channel=0, freq=0, duration_ms=0,
+                    channel=254, freq=new_ms, duration_ms=0,
                     is_rest=True, is_bpm_change=True, new_bpm=item.bpm,
                 ))
             elif isinstance(item, VolumeChange):
                 self._events.append(FlatEvent(
-                    channel=0, freq=0, duration_ms=0,
+                    channel=253, freq=item.volume, duration_ms=0,
                     is_rest=True, is_volume_change=True, new_volume=item.volume,
                 ))
 
@@ -956,9 +957,13 @@ class CodeGenerator:
             "            if (!ev.isRest) {",
             "                triggerNoteOn(ev.channel, ev.freq, ev.velocity);",
             "            }",
-            "            // Handle BPM change (encoded as freq == special marker)",
-            "            if (ev.isRest && ev.duration == 0 && ev.freq == 0 && ev.velocity != 255) {",
-            "                // Special events encoded via velocity field",
+            "            // BPM change: channel 254, freq = new msPerBeat",
+            "            if (ev.channel == 254 && ev.isRest) {",
+            "                msPerBeat = ev.freq;",
+            "            }",
+            "            // Volume change: channel 253, freq = new volume",
+            "            if (ev.channel == 253 && ev.isRest) {",
+            "                masterVol = (uint8_t)ev.freq;",
             "            }",
             "            if (!ev.simNext) break;",
             "            currentEvent++;",
@@ -1007,9 +1012,13 @@ class CodeGenerator:
             ]
 
         for i in range(n):
+            inst = self._instruments[i]
+            has_delay_i = self._has_delay and inst.delay_time_ms > 0
+
+            lines.append(f"    int16_t s{i} = 0;")
             lines.append(f"    if (channelActive[{i}]) {{")
             lines.append(
-                f"        int16_t s{i} ="
+                f"        s{i} ="
                 f" ((int16_t)osc{i}.next()"
                 f" * (int16_t)env{i}.next()) >> 8;"
             )
@@ -1023,31 +1032,32 @@ class CodeGenerator:
             )
 
             # Low-pass filter
-            if self._has_filter and self._instruments[i].cutoff is not None:
+            if self._has_filter and inst.cutoff is not None:
                 lines.append(f"        // LPF")
                 lines.append(f"        int16_t alpha{i} = (int16_t)(((uint32_t)channelCutoff[{i}] * 256) / (MOZZI_AUDIO_RATE / 2));")
                 lines.append(f"        if (alpha{i} > 255) alpha{i} = 255;")
                 lines.append(f"        lpfState[{i}] += (alpha{i} * (s{i} - lpfState[{i}])) >> 8;")
                 lines.append(f"        s{i} = lpfState[{i}];")
 
-            # Delay effect
-            inst = self._instruments[i]
-            if self._has_delay and inst.delay_time_ms > 0:
+            lines.append(f"    }}")
+
+            # Delay runs even when channel inactive so tails ring out
+            if has_delay_i:
                 buf_size = max(1, inst.delay_time_ms * self.config.audio_rate // 1000)
                 fb = inst.delay_feedback
-                lines.append(f"        // Delay")
+                lines.append(f"    {{ // Delay ch{i}")
                 lines.append(f"        int8_t dly{i} = delayBuf{i}[delayPos{i}];")
                 lines.append(f"        int16_t wet{i} = s{i} + ((int16_t)dly{i} * {fb}) / 255;")
                 lines.append(f"        delayBuf{i}[delayPos{i}] = (int8_t)(wet{i} > 127 ? 127 : (wet{i} < -128 ? -128 : wet{i}));")
                 lines.append(f"        delayPos{i} = (delayPos{i} + 1) % {buf_size};")
                 lines.append(f"        s{i} = wet{i};")
+                lines.append(f"    }}")
 
             if self._is_stereo:
-                lines.append(f"        sampleL += (s{i} * (int16_t)(255 - channelPan[{i}])) >> 8;")
-                lines.append(f"        sampleR += (s{i} * (int16_t)channelPan[{i}]) >> 8;")
+                lines.append(f"    sampleL += (s{i} * (int16_t)(255 - channelPan[{i}])) >> 8;")
+                lines.append(f"    sampleR += (s{i} * (int16_t)channelPan[{i}]) >> 8;")
             else:
-                lines.append(f"        sample += s{i};")
-            lines.append(f"    }}")
+                lines.append(f"    sample += s{i};")
             lines.append("")
 
         if n > 1:
