@@ -1,8 +1,3 @@
-# multi_track.mdsl
-# Multi-instrument track — a bass line and a lead melody playing together.
-# The sequencer interleaves events from both sequences.
-# Demonstrates multiple SYNTH instruments with different waveforms.
-
 BPM 120
 
 INSTRUMENT bass:
@@ -26,23 +21,17 @@ INSTRUMENT kick:
 
 SEQUENCE bassline:
     PLAY bass C2 1
-    PLAY bass C2 1
     PLAY bass G2 1
-    PLAY bass F2 1
 
 SEQUENCE melody:
     PLAY lead E4 0.5
     PLAY lead G4 0.5
     PLAY lead A4 1
-    PLAY lead G4 0.5
-    PLAY lead E4 0.5
-    PLAY lead D4 1
 
 PATTERN beat:
     BEAT 1: kick
     BEAT 3: kick
 
-LOOP 2:
-    PLAY_SEQUENCE bassline
-    PLAY_SEQUENCE melody
-    PLAY_PATTERN beat
+PLAY_SEQUENCE bassline
+PLAY_SEQUENCE melody
+PLAY_PATTERN beat

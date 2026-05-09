@@ -1,7 +1,3 @@
-# Play Together Demo
-# Bass, melody, and drums all playing at the same time
-# using the PLAY_TOGETHER block.
-
 BPM 120
 
 INSTRUMENT bass:

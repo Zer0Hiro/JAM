@@ -1,31 +1,18 @@
-# melody.mdsl
-# A looping melody — demonstrates LOOP blocks and sequence repetition.
-# Plays a short ascending phrase three times then a descending resolution.
-
 BPM 140
 
 INSTRUMENT lead:
     TYPE SYNTH
     WAVE SAW
-    ADSR 5 30 150 80
+    ADSR 10 30 200 100
     VOLUME 180
 
-SEQUENCE rise:
+SEQUENCE verse:
     PLAY lead C4 0.5
     PLAY lead D4 0.5
-    PLAY lead E4 0.5
-    PLAY lead F4 0.5
-    PLAY lead G4 1
-    REST 0.5
-
-SEQUENCE resolve:
+    PLAY lead E4 1
     PLAY lead G4 0.5
-    PLAY lead F4 0.5
     PLAY lead E4 0.5
-    PLAY lead D4 0.5
-    PLAY lead C4 2
+    PLAY lead D4 1
 
 LOOP 3:
-    PLAY_SEQUENCE rise
-
-PLAY_SEQUENCE resolve
+    PLAY_SEQUENCE verse

@@ -464,7 +464,9 @@ class WavRenderer:
         abs_events: list[tuple[float, WavEvent]] = []
         t = 0.0
         for ev in events:
-            if ev.is_rest:
+            if ev.is_volume_change:
+                abs_events.append((t, ev))
+            elif ev.is_rest:
                 if not ev.simultaneous_with_next:
                     t += ev.duration_s
             else:
@@ -488,6 +490,13 @@ class WavRenderer:
                     self._flatten_arrangement(child.body)
             elif isinstance(child, PlayTogetherBlock):
                 self._flatten_play_together(child)
+            elif isinstance(child, BPMChange):
+                self._current_bpm = child.bpm
+            elif isinstance(child, VolumeChange):
+                self._events.append(WavEvent(
+                    inst_index=0, freq=0.0, duration_s=0.0,
+                    is_rest=True, is_volume_change=True, new_volume=child.volume,
+                ))
             child_timelines.append(self._events)
             self._events = saved
 
@@ -511,23 +520,30 @@ class WavRenderer:
                     inst_index=0, freq=0.0, duration_s=start, is_rest=True,
                 ))
             elif g_idx > 0:
-                gap = start - groups[g_idx - 1][0]
+                prev_start = groups[g_idx - 1][0]
                 prev_group = groups[g_idx - 1][1]
-                prev_duration = prev_group[-1].duration_s if prev_group else 0.0
-                rest_gap = gap - prev_duration
+                prev_max_dur = max(ev.duration_s for ev in prev_group)
+                prev_end = prev_start + prev_max_dur
+                rest_gap = start - prev_end
                 if rest_gap > 0.001:
                     self._events.append(WavEvent(
                         inst_index=0, freq=0.0, duration_s=rest_gap, is_rest=True,
                     ))
 
+            control_evs = [ev for ev in group if ev.is_volume_change]
+            note_evs = [ev for ev in group if not ev.is_volume_change]
+
+            for cev in control_evs:
+                self._events.append(cev)
+
             if g_idx + 1 < len(groups):
                 next_start = groups[g_idx + 1][0]
             else:
-                next_start = start + max(ev.duration_s for ev in group)
+                next_start = start + max((ev.duration_s for ev in note_evs), default=0.0)
             beat_gap = max(0.001, next_start - start)
 
-            for ev_idx, ev in enumerate(group):
-                is_last = ev_idx == len(group) - 1
+            for ev_idx, ev in enumerate(note_evs):
+                is_last = ev_idx == len(note_evs) - 1
                 self._events.append(WavEvent(
                     inst_index=ev.inst_index,
                     freq=ev.freq,
@@ -588,6 +604,9 @@ class WavRenderer:
         # Glide state: prev freq per instrument channel
         glide_prev_freq: dict[int, float] = {}
 
+        # Sustained notes: [ev, inst_idx, total_dur_s, elapsed_s, phase, osc_fn]
+        sustained: list[list] = []
+
         while ev_idx < len(self._events):
             # Collect simultaneous group
             group: list[WavEvent] = [self._events[ev_idx]]
@@ -611,14 +630,18 @@ class WavRenderer:
                     di in delay_bufs and any(abs(v) > 0.001 for v in delay_bufs[di])
                     for di in delay_bufs
                 )
-                if not has_active_delay:
+                if not has_active_delay and not sustained:
                     if self._is_stereo:
                         all_samples.extend([0] * (num_samples * 2))
                     else:
                         all_samples.extend([0] * num_samples)
+                    advance_s = last_event.duration_s
+                    sustained = [sn for sn in sustained if sn[3] + advance_s < sn[2] + self._envelopes[sn[1]].release_s]
+                    for sn in sustained:
+                        sn[3] += advance_s
                     continue
 
-                # Process delay tails during REST
+                # Process delay tails and sustained notes during REST
                 for s in range(num_samples):
                     mixed_l = 0.0
                     mixed_r = 0.0
@@ -641,6 +664,25 @@ class WavRenderer:
                             mixed_r += sample_val * right_gain
                         else:
                             mixed += sample_val
+                    for sn in sustained:
+                        st = sn[3] + s / WAV_SAMPLE_RATE
+                        env_val = self._envelopes[sn[1]].amplitude_at(st, sn[2])
+                        if env_val < 0.0001:
+                            continue
+                        vol = self._volumes[sn[1]] * sn[0].velocity
+                        osc_val = sn[5](sn[4])
+                        sn[4] += sn[0].freq / WAV_SAMPLE_RATE
+                        if sn[4] >= 1.0:
+                            sn[4] -= 1.0
+                        sv = osc_val * env_val * vol
+                        if self._is_stereo:
+                            pan = self._pans[sn[1]]
+                            left_gain = max(0.0, 1.0 - pan) if pan > 0 else 1.0
+                            right_gain = max(0.0, 1.0 + pan) if pan < 0 else 1.0
+                            mixed_l += sv * left_gain
+                            mixed_r += sv * right_gain
+                        else:
+                            mixed += sv
                     if self._is_stereo:
                         mixed_l *= master_volume
                         mixed_r *= master_volume
@@ -652,6 +694,10 @@ class WavRenderer:
                         mixed *= master_volume
                         sv = int(mixed * 24000)
                         all_samples.append(max(-32768, min(32767, sv)))
+                advance_s = last_event.duration_s
+                sustained = [sn for sn in sustained if sn[3] + advance_s < sn[2] + self._envelopes[sn[1]].release_s]
+                for sn in sustained:
+                    sn[3] += advance_s
                 continue
 
             max_release_s = 0.0
@@ -669,8 +715,12 @@ class WavRenderer:
                     all_samples.extend([0] * num_samples)
                 continue
 
+            advance_s = last_event.duration_s
+            has_sustaining = sustained or any(
+                ev.duration_s > advance_s + 0.001 for ev, _ in active_members
+            )
             release_samples = int(max_release_s * WAV_SAMPLE_RATE)
-            total = num_samples + release_samples
+            total = num_samples if has_sustaining else num_samples + release_samples
 
             phases = [0.0] * len(active_members)
             hp_prev_in = [0.0] * len(active_members)
@@ -696,7 +746,8 @@ class WavRenderer:
                 else:
                     m_hp_alpha.append(0.0)
 
-            scale = 1.0 / (len(active_members) ** 0.5) if len(active_members) > 1 else 1.0
+            total_voices = len(active_members) + len(sustained)
+            scale = 1.0 / (total_voices ** 0.5) if total_voices > 1 else 1.0
 
             # Precompute glide targets
             m_glide_from: list[float] = []
@@ -782,6 +833,27 @@ class WavRenderer:
                     else:
                         mixed += sample_val
 
+                # Mix in sustained notes from previous groups
+                for sn in sustained:
+                    st = sn[3] + t
+                    env_val = self._envelopes[sn[1]].amplitude_at(st, sn[2])
+                    if env_val < 0.0001:
+                        continue
+                    vol = self._volumes[sn[1]] * sn[0].velocity
+                    osc_val = sn[5](sn[4])
+                    sn[4] += sn[0].freq / WAV_SAMPLE_RATE
+                    if sn[4] >= 1.0:
+                        sn[4] -= 1.0
+                    sv = osc_val * env_val * vol
+                    if self._is_stereo:
+                        pan = self._pans[sn[1]]
+                        left_gain = max(0.0, 1.0 - pan) if pan > 0 else 1.0
+                        right_gain = max(0.0, 1.0 + pan) if pan < 0 else 1.0
+                        mixed_l += sv * left_gain
+                        mixed_r += sv * right_gain
+                    else:
+                        mixed += sv
+
                 if self._is_stereo:
                     mixed_l *= scale * master_volume
                     mixed_r *= scale * master_volume
@@ -794,6 +866,19 @@ class WavRenderer:
                     sample_i = int(mixed * 24000)
                     sample_i = max(-32768, min(32767, sample_i))
                     all_samples.append(sample_i)
+
+            # Update sustained notes: advance elapsed, remove finished, add new
+            new_sustained = []
+            for sn in sustained:
+                sn[3] += advance_s
+                total_note_s = sn[2] + self._envelopes[sn[1]].release_s
+                if sn[3] < total_note_s:
+                    new_sustained.append(sn)
+            for m_idx, (ev, idx) in enumerate(active_members):
+                if ev.duration_s > advance_s + 0.001:
+                    osc_fn = _OSCILLATORS.get(self._instruments[idx].wave, _sin_sample)
+                    new_sustained.append([ev, idx, ev.duration_s, advance_s, phases[m_idx], osc_fn])
+            sustained = new_sustained
 
         return all_samples
 

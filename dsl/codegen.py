@@ -409,7 +409,9 @@ class CodeGenerator:
         abs_events: list[tuple[int, FlatEvent]] = []
         t = 0
         for ev in events:
-            if ev.is_rest:
+            if ev.is_bpm_change or ev.is_volume_change:
+                abs_events.append((t, ev))
+            elif ev.is_rest:
                 if not ev.simultaneous_with_next:
                     t += ev.duration_ms
             else:
@@ -432,6 +434,18 @@ class CodeGenerator:
                     self._flatten_arrangement(child.body)
             elif isinstance(child, PlayTogetherBlock):
                 self._flatten_play_together(child)
+            elif isinstance(child, BPMChange):
+                self.config.bpm = child.bpm
+                new_ms = 60000 // child.bpm
+                self._events.append(FlatEvent(
+                    channel=254, freq=new_ms, duration_ms=0,
+                    is_rest=True, is_bpm_change=True, new_bpm=child.bpm,
+                ))
+            elif isinstance(child, VolumeChange):
+                self._events.append(FlatEvent(
+                    channel=253, freq=child.volume, duration_ms=0,
+                    is_rest=True, is_volume_change=True, new_volume=child.volume,
+                ))
             child_events = self._events[saved:]
             self._events = self._events[:saved]
             child_timelines.append(child_events)
@@ -456,23 +470,30 @@ class CodeGenerator:
                     channel=0, freq=0, duration_ms=start, is_rest=True,
                 ))
             elif g_idx > 0:
-                gap = start - groups[g_idx - 1][0]
+                prev_start = groups[g_idx - 1][0]
                 prev_group = groups[g_idx - 1][1]
-                prev_duration = prev_group[-1].duration_ms if prev_group else 0
-                rest_gap = gap - prev_duration
+                prev_max_dur = max(ev.duration_ms for ev in prev_group)
+                prev_end = prev_start + prev_max_dur
+                rest_gap = start - prev_end
                 if rest_gap > 0:
                     self._events.append(FlatEvent(
                         channel=0, freq=0, duration_ms=rest_gap, is_rest=True,
                     ))
 
+            control_evs = [ev for ev in group if ev.is_bpm_change or ev.is_volume_change]
+            note_evs = [ev for ev in group if not ev.is_bpm_change and not ev.is_volume_change]
+
+            for cev in control_evs:
+                self._events.append(cev)
+
             if g_idx + 1 < len(groups):
                 next_start = groups[g_idx + 1][0]
             else:
-                next_start = start + max(ev.duration_ms for ev in group)
+                next_start = start + max((ev.duration_ms for ev in note_evs), default=0)
             beat_gap = max(1, next_start - start)
 
-            for ev_idx, ev in enumerate(group):
-                is_last = ev_idx == len(group) - 1
+            for ev_idx, ev in enumerate(note_evs):
+                is_last = ev_idx == len(note_evs) - 1
                 self._events.append(FlatEvent(
                     channel=ev.channel,
                     freq=ev.freq,
@@ -716,6 +737,9 @@ class CodeGenerator:
             "unsigned long eventStartTime = 0;\n"
             "bool eventTriggered = false;\n"
             "\n"
+            "// Per-channel note-off tracking (independent of sequencer advance)\n"
+            f"unsigned long channelNoteOff[{max(1, len(self._instruments))}];\n"
+            "\n"
             "// Read event from PROGMEM\n"
             "NoteEvent readEvent(uint16_t idx) {\n"
             "    NoteEvent ev;\n"
@@ -943,8 +967,16 @@ class CodeGenerator:
             "        return;",
             "    }",
             "",
-            "    NoteEvent ev = readEvent(currentEvent);",
             "    unsigned long now = mozziMicros();",
+            "",
+            "    // Per-channel note-off (independent of sequencer advance)",
+            f"    for (uint8_t ch = 0; ch < {max(1, len(self._instruments))}; ch++) {{",
+            "        if (channelActive[ch] && now >= channelNoteOff[ch]) {",
+            "            triggerNoteOff(ch);",
+            "        }",
+            "    }",
+            "",
+            "    NoteEvent ev = readEvent(currentEvent);",
             "    unsigned long elapsed = now - eventStartTime;",
             "    unsigned long durationUs = (unsigned long)ev.duration * 1000UL;",
             "",
@@ -956,6 +988,7 @@ class CodeGenerator:
             "            ev = readEvent(currentEvent);",
             "            if (!ev.isRest) {",
             "                triggerNoteOn(ev.channel, ev.freq, ev.velocity);",
+            "                channelNoteOff[ev.channel] = now + (unsigned long)ev.duration * 1000UL;",
             "            }",
             "            // BPM change: channel 254, freq = new msPerBeat",
             "            if (ev.channel == 254 && ev.isRest) {",
@@ -970,19 +1003,12 @@ class CodeGenerator:
             "        } while (currentEvent < NUM_EVENTS);",
             "",
             "        eventTriggered = true;",
-            "        // Timing is based on the last event in the group",
+            "        // Sequencer advance is based on the last event in the group",
             "        ev = readEvent(currentEvent);",
             "        durationUs = (unsigned long)ev.duration * 1000UL;",
             "    }",
             "",
             "    if (elapsed >= durationUs) {",
-            "        // Note-off for all channels in the group",
-            "        for (uint16_t i = groupStart; i <= currentEvent; i++) {",
-            "            NoteEvent ge = readEvent(i);",
-            "            if (!ge.isRest) {",
-            "                triggerNoteOff(ge.channel);",
-            "            }",
-            "        }",
             "        currentEvent++;",
             "        eventTriggered = false;",
             "        eventStartTime = now;",

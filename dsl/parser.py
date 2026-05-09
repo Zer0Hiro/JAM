@@ -164,7 +164,7 @@ class Parser:
                         program.arrangement.append(item)
                     else:
                         self._parse_config(program.config)
-                elif kw == "VOLUME" and program.arrangement:
+                elif kw == "VOLUME":
                     item = self._parse_arrangement_item()
                     program.arrangement.append(item)
                 elif kw == "INSTRUMENT":
