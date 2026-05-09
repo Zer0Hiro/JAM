@@ -174,7 +174,7 @@ LOOP 2:
         PLAY_PATTERN beat
 ```
 
-More examples in [`dsl_examples/`](dsl_examples/).
+More examples in [`examples/`](examples/).
 
 ## Hardware Targets
 
