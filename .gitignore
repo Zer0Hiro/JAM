@@ -6,3 +6,4 @@
 *.wav
 .venv
 CLAUDE.md
+.claude
