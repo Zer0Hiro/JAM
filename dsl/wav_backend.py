@@ -28,6 +28,7 @@ from typing import Optional
 from .ast_nodes import (
     ADSRParams,
     BeatEvent,
+    BPMChange,
     InstrumentDef,
     InstrumentKind,
     LoopBlock,
@@ -38,6 +39,7 @@ from .ast_nodes import (
     PlayTogetherBlock,
     Program,
     RestEvent,
+    VolumeChange,
     WaveType,
 )
 from .notes import note_name_to_freq
@@ -195,6 +197,11 @@ class WavEvent:
     duration_s: float
     is_rest: bool = False
     simultaneous_with_next: bool = False
+    velocity: float = 1.0
+    is_bpm_change: bool = False
+    new_bpm: int = 0
+    is_volume_change: bool = False
+    new_volume: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +256,13 @@ class WavRenderer:
         # Build volume scaling (0.0..1.0) per instrument
         self._volumes: list[float] = [inst.volume / 255.0 for inst in self._instruments]
 
+        # Stereo mode
+        self._is_stereo = any(inst.pan != 127 for inst in self._instruments)
+        self._pans: list[float] = [(inst.pan - 127) / 128.0 for inst in self._instruments]
+
+        # Current BPM (mutable for dynamic automation)
+        self._current_bpm = program.config.bpm
+
         # Flatten arrangement
         self._events: list[WavEvent] = []
         self._flatten_arrangement(program.arrangement)
@@ -282,6 +296,13 @@ class WavRenderer:
                     volume=base_inst.volume,
                     freq=base_inst.freq,
                     decay_ms=base_inst.decay_ms,
+                    cutoff=base_inst.cutoff,
+                    resonance=base_inst.resonance,
+                    reverb=base_inst.reverb,
+                    delay_time_ms=base_inst.delay_time_ms,
+                    delay_feedback=base_inst.delay_feedback,
+                    glide_ms=base_inst.glide_ms,
+                    pan=base_inst.pan,
                 )
                 new_idx = len(self._instruments)
                 self._instruments.append(clone)
@@ -290,8 +311,8 @@ class WavRenderer:
             self._voice_channels[inst_name] = channels
 
     def _beats_to_s(self, beats: float) -> float:
-        """Convert beats to seconds."""
-        return beats * 60.0 / self.config.bpm
+        """Convert beats to seconds using current BPM."""
+        return beats * 60.0 / self._current_bpm
 
     def _flatten_arrangement(self, items: list) -> None:
         """Recursively flatten arrangement into WavEvents."""
@@ -305,6 +326,13 @@ class WavRenderer:
                     self._flatten_arrangement(item.body)
             elif isinstance(item, PlayTogetherBlock):
                 self._flatten_play_together(item)
+            elif isinstance(item, BPMChange):
+                self._current_bpm = item.bpm
+            elif isinstance(item, VolumeChange):
+                self._events.append(WavEvent(
+                    inst_index=0, freq=0.0, duration_s=0.0,
+                    is_rest=True, is_volume_change=True, new_volume=item.volume,
+                ))
 
     def _flatten_sequence(self, name: str) -> None:
         """Flatten a named sequence into WavEvents."""
@@ -320,6 +348,7 @@ class WavRenderer:
                     is_rest=True,
                 ))
             elif isinstance(ev, PlayNote):
+                vel = (ev.velocity / 255.0) if ev.velocity is not None else 1.0
                 if ev.notes:
                     channels = self._voice_channels.get(
                         ev.instrument,
@@ -334,6 +363,7 @@ class WavRenderer:
                             duration_s=self._beats_to_s(ev.duration_beats),
                             is_rest=False,
                             simultaneous_with_next=not is_last,
+                            velocity=vel,
                         ))
                 else:
                     idx = self._inst_index.get(ev.instrument, 0)
@@ -349,6 +379,7 @@ class WavRenderer:
                         freq=freq,
                         duration_s=self._beats_to_s(ev.duration_beats),
                         is_rest=False,
+                        velocity=vel,
                     ))
 
     def _flatten_pattern(self, name: str) -> None:
@@ -414,6 +445,7 @@ class WavRenderer:
                 else:
                     dur = 0.08
 
+                vel = (bev.velocity / 255.0) if bev.velocity is not None else 1.0
                 is_last = (ev_idx == len(expanded) - 1)
                 self._events.append(WavEvent(
                     inst_index=idx,
@@ -421,6 +453,7 @@ class WavRenderer:
                     duration_s=beat_gap_s if is_last else dur,
                     is_rest=False,
                     simultaneous_with_next=not is_last,
+                    velocity=vel,
                 ))
 
             current_beat = next_pos
@@ -530,29 +563,56 @@ class WavRenderer:
         Handles simultaneous groups by mixing multiple instruments together.
 
         Returns:
-            List of int16 sample values.
+            List of int16 sample values (interleaved L/R if stereo).
         """
         all_samples: list[int] = []
         n_instruments = len(self._instruments)
-        i = 0
+        ev_idx = 0
+        master_volume = 1.0
 
-        while i < len(self._events):
+        # Delay buffers per instrument
+        delay_bufs: dict[int, list[float]] = {}
+        delay_positions: dict[int, int] = {}
+        for di, inst in enumerate(self._instruments):
+            if inst.delay_time_ms > 0:
+                buf_len = max(1, int(inst.delay_time_ms / 1000.0 * WAV_SAMPLE_RATE))
+                delay_bufs[di] = [0.0] * buf_len
+                delay_positions[di] = 0
+
+        # LPF state per instrument
+        lpf_states: dict[int, float] = {}
+        for di, inst in enumerate(self._instruments):
+            if inst.cutoff is not None:
+                lpf_states[di] = 0.0
+
+        # Glide state: prev freq per instrument channel
+        glide_prev_freq: dict[int, float] = {}
+
+        while ev_idx < len(self._events):
             # Collect simultaneous group
-            group: list[WavEvent] = [self._events[i]]
-            while group[-1].simultaneous_with_next and i + 1 < len(self._events):
-                i += 1
-                group.append(self._events[i])
-            i += 1
+            group: list[WavEvent] = [self._events[ev_idx]]
+            while group[-1].simultaneous_with_next and ev_idx + 1 < len(self._events):
+                ev_idx += 1
+                group.append(self._events[ev_idx])
+            ev_idx += 1
+
+            # Handle volume change events
+            if any(ev.is_volume_change for ev in group):
+                for ev in group:
+                    if ev.is_volume_change:
+                        master_volume = ev.new_volume / 255.0
+                continue
 
             last_event = group[-1]
             num_samples = max(1, int(last_event.duration_s * WAV_SAMPLE_RATE))
 
-            # All rests or no instruments
             if all(ev.is_rest or ev.freq <= 0 for ev in group) or n_instruments == 0:
-                all_samples.extend([0] * num_samples)
+                if self._is_stereo:
+                    all_samples.extend([0] * (num_samples * 2))
+                else:
+                    all_samples.extend([0] * num_samples)
                 continue
 
-            # Find max release tail across active group members
             max_release_s = 0.0
             active_members: list[tuple[WavEvent, int]] = []
             for ev in group:
@@ -562,18 +622,19 @@ class WavRenderer:
                 max_release_s = max(max_release_s, self._envelopes[ev.inst_index].release_s)
 
             if not active_members:
-                all_samples.extend([0] * num_samples)
+                if self._is_stereo:
+                    all_samples.extend([0] * (num_samples * 2))
+                else:
+                    all_samples.extend([0] * num_samples)
                 continue
 
             release_samples = int(max_release_s * WAV_SAMPLE_RATE)
             total = num_samples + release_samples
 
-            # Per-member synthesis state
             phases = [0.0] * len(active_members)
             hp_prev_in = [0.0] * len(active_members)
             hp_prev_out = [0.0] * len(active_members)
 
-            # Precompute per-member drum synthesis parameters
             m_is_drum_noise: list[bool] = []
             m_is_drum_tonal: list[bool] = []
             m_hp_alpha: list[float] = []
@@ -596,17 +657,39 @@ class WavRenderer:
 
             scale = 1.0 / (len(active_members) ** 0.5) if len(active_members) > 1 else 1.0
 
+            # Precompute glide targets
+            m_glide_from: list[float] = []
+            m_glide_to: list[float] = []
+            m_glide_samples: list[int] = []
+            for ev, idx in active_members:
+                inst = self._instruments[idx]
+                if inst.glide_ms > 0 and idx in glide_prev_freq:
+                    m_glide_from.append(glide_prev_freq[idx])
+                    m_glide_to.append(ev.freq)
+                    m_glide_samples.append(max(1, int(inst.glide_ms / 1000.0 * WAV_SAMPLE_RATE)))
+                else:
+                    m_glide_from.append(ev.freq)
+                    m_glide_to.append(ev.freq)
+                    m_glide_samples.append(0)
+                glide_prev_freq[idx] = ev.freq
+
             for s in range(total):
                 t = s / WAV_SAMPLE_RATE
+                mixed_l = 0.0
+                mixed_r = 0.0
                 mixed = 0.0
 
                 for m_idx, (ev, idx) in enumerate(active_members):
                     envelope = self._envelopes[idx]
-                    volume = self._volumes[idx]
+                    volume = self._volumes[idx] * ev.velocity
+
+                    # Compute current frequency (with glide)
+                    cur_freq = ev.freq
+                    if m_glide_samples[m_idx] > 0 and s < m_glide_samples[m_idx]:
+                        frac = s / m_glide_samples[m_idx]
+                        cur_freq = m_glide_from[m_idx] * ((m_glide_to[m_idx] / max(0.1, m_glide_from[m_idx])) ** frac)
 
                     if m_is_drum_noise[m_idx]:
-                        # High-pass filtered noise — freq controls cutoff
-                        # Higher freq = brighter (hat), lower = fuller (snare)
                         raw_noise = random.uniform(-1.0, 1.0)
                         alpha = m_hp_alpha[m_idx]
                         hp_prev_out[m_idx] = alpha * (
@@ -615,54 +698,81 @@ class WavRenderer:
                         hp_prev_in[m_idx] = raw_noise
                         osc_val = hp_prev_out[m_idx]
                     elif m_is_drum_tonal[m_idx]:
-                        # Pitch sweep for tonal drums (kick, toms)
-                        # Start at 5x base freq, exponential decay to base
-                        sweep_freq = ev.freq * (1.0 + 4.0 * math.exp(-t * 80.0))
+                        sweep_freq = cur_freq * (1.0 + 4.0 * math.exp(-t * 80.0))
                         osc_val = m_osc_fn[m_idx](phases[m_idx])
                         phases[m_idx] += sweep_freq / WAV_SAMPLE_RATE
                         while phases[m_idx] >= 1.0:
                             phases[m_idx] -= 1.0
                     else:
                         osc_val = m_osc_fn[m_idx](phases[m_idx])
-                        phases[m_idx] += ev.freq / WAV_SAMPLE_RATE
+                        phases[m_idx] += cur_freq / WAV_SAMPLE_RATE
                         if phases[m_idx] >= 1.0:
                             phases[m_idx] -= 1.0
 
                     env_val = envelope.amplitude_at(t, ev.duration_s)
-                    mixed += osc_val * env_val * volume
+                    sample_val = osc_val * env_val * volume
 
-                mixed *= scale
-                sample_i = int(mixed * 24000)
-                sample_i = max(-32768, min(32767, sample_i))
-                all_samples.append(sample_i)
+                    # Low-pass filter
+                    inst = self._instruments[idx]
+                    if idx in lpf_states and inst.cutoff is not None:
+                        fc = inst.cutoff
+                        alpha_lpf = (2.0 * math.pi * fc / WAV_SAMPLE_RATE) / (1.0 + 2.0 * math.pi * fc / WAV_SAMPLE_RATE)
+                        lpf_states[idx] += alpha_lpf * (sample_val - lpf_states[idx])
+                        sample_val = lpf_states[idx]
+
+                    # Delay effect
+                    if idx in delay_bufs and inst.delay_time_ms > 0:
+                        buf = delay_bufs[idx]
+                        pos = delay_positions[idx]
+                        delayed = buf[pos]
+                        fb = inst.delay_feedback / 255.0
+                        wet = sample_val + delayed * fb
+                        buf[pos] = wet
+                        delay_positions[idx] = (pos + 1) % len(buf)
+                        dry_wet = inst.reverb / 255.0 if inst.reverb > 0 else 0.5
+                        sample_val = sample_val * (1.0 - dry_wet) + wet * dry_wet
+
+                    if self._is_stereo:
+                        pan = self._pans[idx]
+                        left_gain = max(0.0, 1.0 - pan) if pan > 0 else 1.0
+                        right_gain = max(0.0, 1.0 + pan) if pan < 0 else 1.0
+                        mixed_l += sample_val * left_gain
+                        mixed_r += sample_val * right_gain
+                    else:
+                        mixed += sample_val
+
+                if self._is_stereo:
+                    mixed_l *= scale * master_volume
+                    mixed_r *= scale * master_volume
+                    sl = int(mixed_l * 24000)
+                    sr = int(mixed_r * 24000)
+                    all_samples.append(max(-32768, min(32767, sl)))
+                    all_samples.append(max(-32768, min(32767, sr)))
+                else:
+                    mixed *= scale * master_volume
+                    sample_i = int(mixed * 24000)
+                    sample_i = max(-32768, min(32767, sample_i))
+                    all_samples.append(sample_i)
 
         return all_samples
 
     def _write_wav(self, path: str, samples: list[int]) -> None:
-        """Write samples to a WAV file on disk.
-
-        Args:
-            path: Output file path.
-            samples: List of int16 sample values.
-        """
+        """Write samples to a WAV file on disk."""
         out = Path(path)
         out.parent.mkdir(parents=True, exist_ok=True)
+        channels = 2 if self._is_stereo else WAV_CHANNELS
         with wave.open(str(out), "wb") as wf:
-            wf.setnchannels(WAV_CHANNELS)
+            wf.setnchannels(channels)
             wf.setsampwidth(WAV_BIT_DEPTH // 8)
             wf.setframerate(WAV_SAMPLE_RATE)
             data = struct.pack(f"<{len(samples)}h", *samples)
             wf.writeframes(data)
 
     def _write_wav_to(self, fp, samples: list[int]) -> None:
-        """Write samples to a file-like object.
-
-        Args:
-            fp: File-like object supporting write().
-            samples: List of int16 sample values.
-        """
+        """Write samples to a file-like object."""
+        channels = 2 if self._is_stereo else WAV_CHANNELS
         with wave.open(fp, "wb") as wf:
-            wf.setnchannels(WAV_CHANNELS)
+            wf.setnchannels(channels)
             wf.setsampwidth(WAV_BIT_DEPTH // 8)
             wf.setframerate(WAV_SAMPLE_RATE)
             data = struct.pack(f"<{len(samples)}h", *samples)

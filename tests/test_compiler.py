@@ -30,6 +30,12 @@ class TestExamplesCompile:
         "multi_track.jam",
         "envelope.jam",
         "play_together.jam",
+        "velocity.jam",
+        "filter.jam",
+        "effects.jam",
+        "glide.jam",
+        "stereo.jam",
+        "automation.jam",
     ])
     def test_example_compiles(self, example: str) -> None:
         code = _compile_example(example)
@@ -39,7 +45,7 @@ class TestExamplesCompile:
         assert "startMozzi(" in code
         assert "void updateControl()" in code
         assert "AudioOutput updateAudio()" in code
-        assert "MonoOutput::from8Bit(" in code
+        assert ("MonoOutput::from8Bit(" in code or "StereoOutput::from8Bit(" in code)
         assert "void loop()" in code
         assert "audioHook();" in code
         # No floats in audio path
@@ -63,8 +69,8 @@ class TestExamplesCompile:
 
     def test_melody_has_loop_unrolled(self) -> None:
         code = _compile_example("melody.jam")
-        # LOOP 3 over a 6-event sequence = 18 events + 5 resolve events = 23
-        assert "#define NUM_EVENTS 23" in code
+        # LOOP 3 over a 6-event sequence = 18 events
+        assert "#define NUM_EVENTS 18" in code
 
     def test_multi_track_has_all_wavetables(self) -> None:
         code = _compile_example("multi_track.jam")

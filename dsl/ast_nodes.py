@@ -82,6 +82,13 @@ class InstrumentDef:
     volume: int = 200
     freq: Optional[int] = None
     decay_ms: Optional[int] = None
+    cutoff: Optional[int] = None
+    resonance: int = 0
+    reverb: int = 0
+    delay_time_ms: int = 0
+    delay_feedback: int = 0
+    glide_ms: int = 0
+    pan: int = 127
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +110,7 @@ class PlayNote:
     note: Optional[str] = None
     notes: Optional[list[str]] = None
     duration_beats: float = 1.0
+    velocity: Optional[int] = None
     line: int = 0
 
 
@@ -135,6 +143,7 @@ class BeatEvent:
     note: Optional[str] = None
     notes: Optional[list[str]] = None
     duration_beats: Optional[float] = None
+    velocity: Optional[int] = None
     line: int = 0
 
 
@@ -197,6 +206,20 @@ class PlayPatternRef:
 
 
 @dataclass
+class BPMChange:
+    """A tempo change within the arrangement."""
+    bpm: int = 120
+    line: int = 0
+
+
+@dataclass
+class VolumeChange:
+    """A master volume change within the arrangement."""
+    volume: int = 200
+    line: int = 0
+
+
+@dataclass
 class LoopBlock:
     """A LOOP N: ... block in the arrangement.
 
@@ -206,7 +229,7 @@ class LoopBlock:
         line: Source line number.
     """
     count: int = 1
-    body: list[PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock] = field(default_factory=list)
+    body: list[PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock | BPMChange | VolumeChange] = field(default_factory=list)
     line: int = 0
 
 
@@ -218,7 +241,7 @@ class PlayTogetherBlock:
         body: List of arrangement items to play at the same time.
         line: Source line number.
     """
-    body: list[PlaySequenceRef | PlayPatternRef | LoopBlock] = field(default_factory=list)
+    body: list[PlaySequenceRef | PlayPatternRef | LoopBlock | BPMChange | VolumeChange] = field(default_factory=list)
     line: int = 0
 
 
@@ -241,4 +264,4 @@ class Program:
     instruments: dict[str, InstrumentDef] = field(default_factory=dict)
     sequences: dict[str, Sequence] = field(default_factory=dict)
     patterns: dict[str, Pattern] = field(default_factory=dict)
-    arrangement: list[PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock] = field(default_factory=list)
+    arrangement: list[PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock | BPMChange | VolumeChange] = field(default_factory=list)

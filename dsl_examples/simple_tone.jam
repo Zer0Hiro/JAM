@@ -1,0 +1,13 @@
+BPM 120
+
+INSTRUMENT tone:
+    TYPE SYNTH
+    WAVE SIN
+    VOLUME 200
+
+SEQUENCE main:
+    PLAY tone C4 1
+    PLAY tone E4 1
+    PLAY tone G4 1
+
+PLAY_SEQUENCE main

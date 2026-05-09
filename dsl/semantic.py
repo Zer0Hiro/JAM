@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .ast_nodes import (
+    BPMChange,
     InstrumentKind,
     LoopBlock,
     PlayNote,
@@ -23,6 +24,7 @@ from .ast_nodes import (
     PlaySequenceRef,
     PlayTogetherBlock,
     Program,
+    VolumeChange,
 )
 from .notes import is_valid_note, note_name_to_midi
 
@@ -125,6 +127,25 @@ def validate(program: Program) -> ValidationResult:
             result.error(f"Instrument '{name}': drum frequency must be positive")
         if inst.decay_ms is not None and inst.decay_ms < 0:
             result.error(f"Instrument '{name}': decay must be non-negative")
+        if inst.cutoff is not None:
+            if inst.cutoff < 20 or inst.cutoff > 20000:
+                result.error(f"Instrument '{name}': cutoff {inst.cutoff} out of range 20-20000 Hz")
+        if inst.resonance < 0 or inst.resonance > 255:
+            result.error(f"Instrument '{name}': resonance {inst.resonance} out of range 0-255")
+        if inst.reverb < 0 or inst.reverb > 255:
+            result.error(f"Instrument '{name}': reverb {inst.reverb} out of range 0-255")
+        if inst.delay_time_ms < 0 or inst.delay_time_ms > 2000:
+            result.error(f"Instrument '{name}': delay time {inst.delay_time_ms} out of range 0-2000 ms")
+        if inst.delay_feedback < 0 or inst.delay_feedback > 255:
+            result.error(f"Instrument '{name}': delay feedback {inst.delay_feedback} out of range 0-255")
+        if inst.glide_ms < 0:
+            result.error(f"Instrument '{name}': glide must be non-negative")
+        if inst.glide_ms > 1000:
+            result.warn(f"Instrument '{name}': glide {inst.glide_ms}ms is very slow")
+        if inst.kind == InstrumentKind.DRUM and inst.glide_ms > 0:
+            result.warn(f"Instrument '{name}': glide on a drum instrument may sound unexpected")
+        if inst.pan < 0 or inst.pan > 255:
+            result.error(f"Instrument '{name}': pan {inst.pan} out of range 0-255")
 
     if synth_count > _MAX_RECOMMENDED_SYNTHS:
         result.warn(
@@ -179,6 +200,11 @@ def validate(program: Program) -> ValidationResult:
                 if ev.duration_beats <= 0:
                     result.error(
                         f"Sequence '{seq_name}': duration must be positive",
+                        ev.line,
+                    )
+                if ev.velocity is not None and (ev.velocity < 0 or ev.velocity > 255):
+                    result.error(
+                        f"Sequence '{seq_name}': velocity {ev.velocity} out of range 0-255",
                         ev.line,
                     )
 
@@ -244,6 +270,11 @@ def validate(program: Program) -> ValidationResult:
                     f"the {pat.beats_per_bar}-beat bar",
                     ev.line,
                 )
+            if ev.velocity is not None and (ev.velocity < 0 or ev.velocity > 255):
+                result.error(
+                    f"Pattern '{pat_name}': velocity {ev.velocity} out of range 0-255",
+                    ev.line,
+                )
 
     # --- Check arrangement references ---
     _check_arrangement(program.arrangement, seq_names, pat_names, result)
@@ -293,3 +324,11 @@ def _check_arrangement(
                     item.line,
                 )
             _check_arrangement(item.body, seq_names, pat_names, result)
+        elif isinstance(item, BPMChange):
+            if item.bpm <= 0:
+                result.error("BPM change must be positive", item.line)
+            if item.bpm > 300:
+                result.warn(f"BPM {item.bpm} is very fast", item.line)
+        elif isinstance(item, VolumeChange):
+            if item.volume < 0 or item.volume > 255:
+                result.error(f"VOLUME {item.volume} out of range 0-255", item.line)

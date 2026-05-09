@@ -73,6 +73,12 @@ INSTRUMENT kick:
 | `VOLUME` | no | `0`–`255` (default: `200`) | Channel volume |
 | `FREQ` | no | integer Hz | Fixed frequency (DRUM only) |
 | `DECAY` | no | integer ms | Decay time (DRUM only) |
+| `CUTOFF` | no | `20`–`20000` Hz | Low-pass filter cutoff frequency |
+| `RESONANCE` | no | `0`–`255` (default: `0`) | Filter resonance / Q factor |
+| `REVERB` | no | `0`–`255` (default: `0`) | Reverb wet/dry mix |
+| `DELAY` | no | `time_ms feedback` (0–2000, 0–255) | Echo delay time and feedback |
+| `GLIDE` | no | `0`–`1000` ms (default: `0`) | Portamento / pitch slide time |
+| `PAN` | no | `0`–`255` (default: `127`) | Stereo pan (0=left, 127=center, 255=right) |
 
 ### Waveforms
 
@@ -121,14 +127,15 @@ SEQUENCE melody:
 ### PLAY syntax
 
 ```
-PLAY <instrument> <note> <duration>
-PLAY <instrument> [C4 E4 G4] <duration>     # chord (multiple notes)
+PLAY <instrument> <note> <duration> [velocity]
+PLAY <instrument> [C4 E4 G4] <duration> [velocity]     # chord
 ```
 
 - **instrument** — must match a defined `INSTRUMENT` name
 - **note** — scientific pitch notation (see [Note Names](#note-names))
 - **chord** — bracket notation `[note note note]` for polyphonic playback (min 2 notes)
 - **duration** — float, in beats relative to BPM (e.g. `0.25` = sixteenth note at 4/4)
+- **velocity** — optional, `0`–`255`. Per-note volume scaling. Omit for full instrument volume
 
 For drums without a melodic pitch, omit the note:
 
@@ -176,14 +183,15 @@ PATTERN basic_beat:
 ### BEAT syntax
 
 ```
-BEAT <position>: <instrument>
-BEAT <position>: <instrument> <note>
-BEAT <position>: <instrument> [C4 E4 G4]
+BEAT <position>: <instrument> [note] [duration] [velocity]
+BEAT <position>: <instrument> [C4 E4 G4] [duration] [velocity]
 ```
 
 - **position** — float, 1-based (1 = first beat of bar). Fractional = offbeats (e.g. `1.5`, `2.5`).
 - **instrument** — must match a defined `INSTRUMENT`
 - **note** — optional pitch for synth instruments in patterns
+- **duration** — optional, in beats
+- **velocity** — optional, `0`–`255`. Per-hit volume scaling
 - Default bar length: 4 beats (4/4 time)
 
 ### Simultaneous playback in patterns
@@ -279,6 +287,29 @@ LOOP 4:
 ```
 
 The body can contain `PLAY_SEQUENCE`, `PLAY_PATTERN`, and `LOOP`.
+
+### Dynamic BPM / VOLUME Changes
+
+`BPM` and `VOLUME` can appear as arrangement items to change tempo or master volume mid-song:
+
+```
+BPM 100
+LOOP 2:
+    PLAY_SEQUENCE verse
+BPM 140
+LOOP 2:
+    PLAY_SEQUENCE chorus
+```
+
+When `BPM` appears after arrangement items have started, it changes the tempo for all subsequent events. When it appears before any arrangement, it sets the initial tempo.
+
+`VOLUME` works the same way — it sets the master volume (0–255) for everything that follows:
+
+```
+PLAY_SEQUENCE intro
+VOLUME 255
+PLAY_SEQUENCE climax
+```
 
 ---
 
@@ -461,6 +492,45 @@ LOOP 2:
     PLAY_SEQUENCE progression
 ```
 
+### Effects and Panning
+
+```
+BPM 120
+
+INSTRUMENT bass:
+    TYPE SYNTH
+    WAVE SAW
+    CUTOFF 600
+    RESONANCE 100
+    PAN 100
+    ADSR 5 40 300 120
+    VOLUME 220
+
+INSTRUMENT lead:
+    TYPE SYNTH
+    WAVE TRIANGLE
+    GLIDE 100
+    DELAY 300 150
+    REVERB 120
+    PAN 180
+    ADSR 10 30 200 100
+    VOLUME 180
+
+SEQUENCE melody:
+    PLAY lead C4 0.5 200
+    PLAY lead E4 0.5 160
+    PLAY lead G4 1 220
+
+SEQUENCE bassline:
+    PLAY bass C2 1
+    PLAY bass G2 1
+
+LOOP 2:
+    PLAY_TOGETHER:
+        PLAY_SEQUENCE melody
+        PLAY_SEQUENCE bassline
+```
+
 ### Envelope Shaping (Pad + Pluck)
 
 ```
@@ -515,8 +585,16 @@ The compiler runs semantic analysis after parsing and reports errors and warning
 | Invalid note name | Note doesn't match `[A-G][#sb]?[0-9]` pattern |
 | Negative duration | Beat duration <= 0 |
 | Volume out of range | Volume not 0–255 |
+| Velocity out of range | Velocity not 0–255 |
 | Negative ADSR | Any ADSR parameter < 0 |
 | LOOP count <= 0 | Loop must repeat at least once |
+| Cutoff out of range | CUTOFF not 20–20000 |
+| Resonance out of range | RESONANCE not 0–255 |
+| Reverb out of range | REVERB not 0–255 |
+| Delay time out of range | DELAY time not 0–2000 |
+| Delay feedback out of range | DELAY feedback not 0–255 |
+| Pan out of range | PAN not 0–255 |
+| BPM change out of range | Dynamic BPM not 1–300 |
 
 ### Warnings (compilation continues)
 
@@ -529,6 +607,8 @@ The compiler runs semantic analysis after parsing and reports errors and warning
 | Non-standard audio rate | Not 16384 or 32768 |
 | Beat outside bar | Beat position > bar length |
 | PLAY_TOGETHER < 2 items | Use PLAY_SEQUENCE / PLAY_PATTERN directly |
+| GLIDE on DRUM | Portamento has no effect on drum instruments |
+| GLIDE > 1000 | Very long glide may sound unnatural |
 
 ---
 
@@ -545,17 +625,25 @@ instrument     := "INSTRUMENT" IDENT ":"
                      | "ADSR" NUMBER NUMBER NUMBER NUMBER
                      | "VOLUME" NUMBER
                      | "FREQ" NUMBER
-                     | "DECAY" NUMBER)+
+                     | "DECAY" NUMBER
+                     | "CUTOFF" NUMBER
+                     | "RESONANCE" NUMBER
+                     | "REVERB" NUMBER
+                     | "DELAY" NUMBER NUMBER
+                     | "GLIDE" NUMBER
+                     | "PAN" NUMBER)+
 
 sequence       := "SEQUENCE" IDENT ":"
-                      ("PLAY" IDENT NOTE NUMBER
-                     | "PLAY" IDENT "[" NOTE+ "]" NUMBER
+                      ("PLAY" IDENT NOTE NUMBER [NUMBER]
+                     | "PLAY" IDENT "[" NOTE+ "]" NUMBER [NUMBER]
                      | "REST" NUMBER)+
 
 pattern        := "PATTERN" IDENT ":"
-                      ("BEAT" NUMBER ":" IDENT [NOTE] [NUMBER])+
+                      ("BEAT" NUMBER ":" IDENT [NOTE] [NUMBER] [NUMBER])+
 
-arrangement    := (loop | play_seq | play_pat | play_together)+
+arrangement    := (loop | play_seq | play_pat | play_together | bpm_change | vol_change)+
+bpm_change     := "BPM" NUMBER
+vol_change     := "VOLUME" NUMBER
 loop           := "LOOP" NUMBER ":" INDENT arrangement DEDENT
 play_seq       := "PLAY_SEQUENCE" IDENT
 play_pat       := "PLAY_PATTERN" IDENT
@@ -566,7 +654,7 @@ play_together  := "PLAY_TOGETHER" ":" INDENT arrangement DEDENT
 
 All keywords must be UPPERCASE:
 
-`BPM`, `AUDIO_RATE`, `CONTROL_RATE`, `INSTRUMENT`, `TYPE`, `SYNTH`, `DRUM`, `WAVE`, `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `ADSR`, `VOLUME`, `FREQ`, `DECAY`, `SEQUENCE`, `PATTERN`, `PLAY`, `REST`, `BEAT`, `LOOP`, `PLAY_SEQUENCE`, `PLAY_PATTERN`, `PLAY_TOGETHER`
+`BPM`, `AUDIO_RATE`, `CONTROL_RATE`, `INSTRUMENT`, `TYPE`, `SYNTH`, `DRUM`, `WAVE`, `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `ADSR`, `VOLUME`, `FREQ`, `DECAY`, `CUTOFF`, `RESONANCE`, `REVERB`, `DELAY`, `GLIDE`, `PAN`, `SEQUENCE`, `PATTERN`, `PLAY`, `REST`, `BEAT`, `LOOP`, `PLAY_SEQUENCE`, `PLAY_PATTERN`, `PLAY_TOGETHER`
 
 ### Identifiers
 

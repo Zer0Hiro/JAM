@@ -1,0 +1,16 @@
+BPM 120
+
+INSTRUMENT pad:
+    TYPE SYNTH
+    WAVE SAW
+    ADSR 50 100 400 200
+    VOLUME 200
+    CUTOFF 800
+    RESONANCE 100
+
+SEQUENCE pad_line:
+    PLAY pad C3 2
+    PLAY pad E3 2
+    PLAY pad G3 2
+
+PLAY_SEQUENCE pad_line
