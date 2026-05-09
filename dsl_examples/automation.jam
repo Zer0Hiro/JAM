@@ -1,0 +1,23 @@
+BPM 100
+
+INSTRUMENT lead:
+    TYPE SYNTH
+    WAVE SAW
+    ADSR 10 30 200 100
+    VOLUME 200
+
+SEQUENCE verse:
+    PLAY lead C4 0.5
+    PLAY lead D4 0.5
+    PLAY lead E4 1
+
+SEQUENCE chorus:
+    PLAY lead G4 0.5
+    PLAY lead A4 0.5
+    PLAY lead C5 1
+
+LOOP 2:
+    PLAY_SEQUENCE verse
+BPM 140
+LOOP 2:
+    PLAY_SEQUENCE chorus

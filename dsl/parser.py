@@ -31,6 +31,7 @@ from typing import Optional
 from .ast_nodes import (
     ADSRParams,
     BeatEvent,
+    BPMChange,
     Config,
     InstrumentDef,
     InstrumentKind,
@@ -43,6 +44,7 @@ from .ast_nodes import (
     Program,
     RestEvent,
     Sequence,
+    VolumeChange,
     WaveType,
 )
 from .lexer import Token, TokenType, tokenize
@@ -157,7 +159,14 @@ class Parser:
             if tok.type == TokenType.KEYWORD:
                 kw = tok.value
                 if kw in ("BPM", "AUDIO_RATE", "CONTROL_RATE"):
-                    self._parse_config(program.config)
+                    if program.arrangement and kw in ("BPM", "VOLUME"):
+                        item = self._parse_arrangement_item()
+                        program.arrangement.append(item)
+                    else:
+                        self._parse_config(program.config)
+                elif kw == "VOLUME" and program.arrangement:
+                    item = self._parse_arrangement_item()
+                    program.arrangement.append(item)
                 elif kw == "INSTRUMENT":
                     inst = self._parse_instrument()
                     program.instruments[inst.name] = inst
@@ -265,6 +274,25 @@ class Parser:
             elif kw.value == "DECAY":
                 self._advance()
                 inst.decay_ms = int(self._expect(TokenType.NUMBER).value)
+            elif kw.value == "CUTOFF":
+                self._advance()
+                inst.cutoff = int(self._expect(TokenType.NUMBER).value)
+            elif kw.value == "RESONANCE":
+                self._advance()
+                inst.resonance = int(self._expect(TokenType.NUMBER).value)
+            elif kw.value == "REVERB":
+                self._advance()
+                inst.reverb = int(self._expect(TokenType.NUMBER).value)
+            elif kw.value == "DELAY":
+                self._advance()
+                inst.delay_time_ms = int(self._expect(TokenType.NUMBER).value)
+                inst.delay_feedback = int(self._expect(TokenType.NUMBER).value)
+            elif kw.value == "GLIDE":
+                self._advance()
+                inst.glide_ms = int(self._expect(TokenType.NUMBER).value)
+            elif kw.value == "PAN":
+                self._advance()
+                inst.pan = int(self._expect(TokenType.NUMBER).value)
             else:
                 raise ParseError(f"Unknown instrument property: {kw.value!r}", kw)
 
@@ -321,11 +349,15 @@ class Parser:
                     note = self._advance().value
 
                 dur = float(self._expect(TokenType.NUMBER).value)
+                vel = None
+                if self._peek_type() == TokenType.NUMBER:
+                    vel = int(self._advance().value)
                 seq.events.append(PlayNote(
                     instrument=inst_tok.value,
                     note=note,
                     notes=chord_notes,
                     duration_beats=dur,
+                    velocity=vel,
                     line=line,
                 ))
                 self._expect(TokenType.NEWLINE)
@@ -395,12 +427,17 @@ class Parser:
                 if self._peek_type() == TokenType.NUMBER:
                     duration_beats = float(self._advance().value)
 
+                vel: Optional[int] = None
+                if self._peek_type() == TokenType.NUMBER:
+                    vel = int(self._advance().value)
+
                 pat.events.append(BeatEvent(
                     beat_position=pos,
                     instrument=inst_tok.value,
                     note=note,
                     notes=chord_notes,
                     duration_beats=duration_beats,
+                    velocity=vel,
                     line=kw.line,
                 ))
                 self._expect(TokenType.NEWLINE)
@@ -414,8 +451,8 @@ class Parser:
 
     # ----- arrangement -------------------------------------------------------
 
-    def _parse_arrangement_item(self) -> PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock:
-        """Parse one arrangement item (LOOP, PLAY_SEQUENCE, PLAY_PATTERN, or PLAY_TOGETHER)."""
+    def _parse_arrangement_item(self):
+        """Parse one arrangement item (LOOP, PLAY_SEQUENCE, PLAY_PATTERN, PLAY_TOGETHER, BPM, VOLUME)."""
         tok = self._current()
 
         if tok.type == TokenType.KEYWORD and tok.value == "LOOP":
@@ -432,6 +469,16 @@ class Parser:
             name = self._expect(TokenType.IDENT).value
             self._expect(TokenType.NEWLINE)
             return PlayPatternRef(pattern_name=name, line=tok.line)
+        elif tok.type == TokenType.KEYWORD and tok.value == "BPM":
+            self._advance()
+            value = int(self._expect(TokenType.NUMBER).value)
+            self._expect(TokenType.NEWLINE)
+            return BPMChange(bpm=value, line=tok.line)
+        elif tok.type == TokenType.KEYWORD and tok.value == "VOLUME":
+            self._advance()
+            value = int(self._expect(TokenType.NUMBER).value)
+            self._expect(TokenType.NEWLINE)
+            return VolumeChange(volume=value, line=tok.line)
         else:
             raise ParseError(f"Expected arrangement item, got {tok.value!r}", tok)
 

@@ -1,0 +1,28 @@
+BPM 120
+
+INSTRUMENT bass:
+    TYPE SYNTH
+    WAVE SAW
+    ADSR 5 40 300 120
+    VOLUME 220
+    PAN 40
+
+INSTRUMENT lead:
+    TYPE SYNTH
+    WAVE TRIANGLE
+    ADSR 10 30 200 100
+    VOLUME 180
+    PAN 200
+
+SEQUENCE bassline:
+    PLAY bass C2 1
+    PLAY bass G2 1
+
+SEQUENCE melody:
+    PLAY lead E4 0.5
+    PLAY lead G4 0.5
+    PLAY lead A4 1
+
+PLAY_TOGETHER:
+    PLAY_SEQUENCE bassline
+    PLAY_SEQUENCE melody

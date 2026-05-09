@@ -1,0 +1,33 @@
+BPM 120
+
+INSTRUMENT kick:
+    TYPE DRUM
+    WAVE SIN
+    FREQ 55
+    DECAY 100
+    VOLUME 255
+
+INSTRUMENT snare:
+    TYPE DRUM
+    WAVE NOISE
+    FREQ 300
+    DECAY 60
+    VOLUME 200
+
+INSTRUMENT hat:
+    TYPE DRUM
+    WAVE NOISE
+    FREQ 800
+    DECAY 30
+    VOLUME 140
+
+PATTERN beat:
+    BEAT 1: kick
+    BEAT 2: hat
+    BEAT 2.5: hat
+    BEAT 3: snare
+    BEAT 4: hat
+    BEAT 4.5: hat
+
+LOOP 4:
+    PLAY_PATTERN beat

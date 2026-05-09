@@ -32,6 +32,7 @@ from typing import Optional
 from .ast_nodes import (
     ADSRParams,
     BeatEvent,
+    BPMChange,
     InstrumentDef,
     InstrumentKind,
     LoopBlock,
@@ -43,6 +44,7 @@ from .ast_nodes import (
     Program,
     RestEvent,
     Sequence,
+    VolumeChange,
     WaveType,
 )
 from .notes import note_name_to_freq_int
@@ -114,6 +116,11 @@ class FlatEvent:
     inst_name: str = ""
     note_name: str = ""
     simultaneous_with_next: bool = False
+    velocity: int = 255
+    is_bpm_change: bool = False
+    new_bpm: int = 0
+    is_volume_change: bool = False
+    new_volume: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -194,12 +201,30 @@ class CodeGenerator:
                     volume=base_inst.volume,
                     freq=base_inst.freq,
                     decay_ms=base_inst.decay_ms,
+                    cutoff=base_inst.cutoff,
+                    resonance=base_inst.resonance,
+                    reverb=base_inst.reverb,
+                    delay_time_ms=base_inst.delay_time_ms,
+                    delay_feedback=base_inst.delay_feedback,
+                    glide_ms=base_inst.glide_ms,
+                    pan=base_inst.pan,
                 )
                 new_idx = len(self._instruments)
                 self._instruments.append(clone)
                 self._inst_index[clone.name] = new_idx
                 channels.append(new_idx)
             self._voice_channels[inst_name] = channels
+
+        # Check for stereo (any pan != 127)
+        self._is_stereo = any(inst.pan != 127 for inst in self._instruments)
+        # Check for filters
+        self._has_filter = any(inst.cutoff is not None for inst in self._instruments)
+        # Check for delay
+        self._has_delay = any(inst.delay_time_ms > 0 for inst in self._instruments)
+        # Check for reverb
+        self._has_reverb = any(inst.reverb > 0 for inst in self._instruments)
+        # Check for glide
+        self._has_glide = any(inst.glide_ms > 0 for inst in self._instruments)
 
     # ----- flatten arrangement -----------------------------------------------
 
@@ -227,6 +252,17 @@ class CodeGenerator:
                     self._flatten_arrangement(item.body)
             elif isinstance(item, PlayTogetherBlock):
                 self._flatten_play_together(item)
+            elif isinstance(item, BPMChange):
+                self.config.bpm = item.bpm
+                self._events.append(FlatEvent(
+                    channel=0, freq=0, duration_ms=0,
+                    is_rest=True, is_bpm_change=True, new_bpm=item.bpm,
+                ))
+            elif isinstance(item, VolumeChange):
+                self._events.append(FlatEvent(
+                    channel=0, freq=0, duration_ms=0,
+                    is_rest=True, is_volume_change=True, new_volume=item.volume,
+                ))
 
     def _flatten_sequence(self, name: str) -> None:
         """Flatten a named sequence into events."""
@@ -242,6 +278,7 @@ class CodeGenerator:
                     is_rest=True,
                 ))
             elif isinstance(ev, PlayNote):
+                vel = ev.velocity if ev.velocity is not None else 255
                 if ev.notes:
                     channels = self._voice_channels.get(
                         ev.instrument,
@@ -258,6 +295,7 @@ class CodeGenerator:
                             inst_name=ev.instrument,
                             note_name=note_name,
                             simultaneous_with_next=not is_last,
+                            velocity=vel,
                         ))
                 else:
                     ch = self._inst_index.get(ev.instrument, 0)
@@ -277,6 +315,7 @@ class CodeGenerator:
                         is_rest=False,
                         inst_name=ev.instrument,
                         note_name=note,
+                        velocity=vel,
                     ))
 
     def _flatten_pattern(self, name: str) -> None:
@@ -346,6 +385,7 @@ class CodeGenerator:
                 else:
                     dur = 80
 
+                vel = bev.velocity if bev.velocity is not None else 255
                 is_last = (ev_idx == len(expanded) - 1)
                 self._events.append(FlatEvent(
                     channel=ch,
@@ -355,6 +395,7 @@ class CodeGenerator:
                     inst_name=bev.instrument,
                     note_name=note_name,
                     simultaneous_with_next=not is_last,
+                    velocity=vel,
                 ))
 
             current_beat = next_pos
@@ -479,6 +520,8 @@ class CodeGenerator:
             f"#define MOZZI_AUDIO_RATE {self.config.audio_rate}",
             f"#define MOZZI_CONTROL_RATE {self.config.control_rate}",
         ]
+        if self._is_stereo:
+            lines.append("#define MOZZI_AUDIO_CHANNELS 2")
         if self.audio_pin is not None:
             if self.audio_pin in (25, 26):
                 lines.append("#define MOZZI_OUTPUT_MODE MOZZI_OUTPUT_I2S_DAC")
@@ -546,6 +589,46 @@ class CodeGenerator:
             lines.append("uint16_t chanBaseFreq[NUM_CHANNELS];")
             lines.append("")
 
+        # Per-channel pan values
+        if self._is_stereo and n > 0:
+            pans = ", ".join(str(inst.pan) for inst in self._instruments)
+            lines.append("// Per-channel pan (0=left, 127=center, 255=right)")
+            lines.append(f"const uint8_t channelPan[NUM_CHANNELS] = {{{pans}}};")
+            lines.append("")
+
+        # Low-pass filter state
+        if self._has_filter and n > 0:
+            lines.append("// Low-pass filter state")
+            lines.append("int16_t lpfState[NUM_CHANNELS];")
+            cutoffs = []
+            resos = []
+            for inst in self._instruments:
+                cutoffs.append(str(inst.cutoff if inst.cutoff is not None else 20000))
+                resos.append(str(inst.resonance))
+            lines.append(f"const uint16_t channelCutoff[NUM_CHANNELS] = {{{', '.join(cutoffs)}}};")
+            lines.append(f"const uint8_t channelReso[NUM_CHANNELS] = {{{', '.join(resos)}}};")
+            lines.append("")
+
+        # Delay buffers
+        if self._has_delay and n > 0:
+            lines.append("// Delay effect state")
+            for i, inst in enumerate(self._instruments):
+                if inst.delay_time_ms > 0:
+                    buf_size = max(1, inst.delay_time_ms * self.config.audio_rate // 1000)
+                    lines.append(f"int8_t delayBuf{i}[{buf_size}];")
+                    lines.append(f"uint16_t delayPos{i} = 0;")
+            lines.append("")
+
+        # Glide state
+        if self._has_glide and n > 0:
+            lines.append("// Glide (portamento) state")
+            lines.append("uint16_t targetFreq[NUM_CHANNELS];")
+            lines.append("uint16_t curGlideFreq[NUM_CHANNELS];")
+            glide_rates = ", ".join(str(inst.glide_ms) for inst in self._instruments)
+            lines.append(f"const uint16_t glideMs[NUM_CHANNELS] = {{{glide_rates}}};")
+            lines.append("uint16_t glideSteps[NUM_CHANNELS];")
+            lines.append("")
+
         return "\n".join(lines)
 
     def _emit_event_table(self) -> str:
@@ -559,6 +642,7 @@ class CodeGenerator:
             "    uint16_t duration;  // duration in ms",
             "    uint8_t isRest;     // 1 = rest, 0 = note",
             "    uint8_t simNext;    // 1 = trigger next event simultaneously",
+            "    uint8_t velocity;   // note velocity 0-255",
             "};",
             "",
         ]
@@ -567,7 +651,7 @@ class CodeGenerator:
             lines.append("#define NUM_EVENTS 1")
             lines.append("")
             lines.append("const NoteEvent events[1] PROGMEM = {")
-            lines.append("    {0, 0, 1000, 1, 0},  // empty — 1s of silence")
+            lines.append("    {0, 0, 1000, 1, 0, 255},  // empty — 1s of silence")
             lines.append("};")
         else:
             lines.append(f"#define NUM_EVENTS {num}")
@@ -576,13 +660,19 @@ class CodeGenerator:
 
             for ev in self._events:
                 comment = ""
-                if ev.is_rest:
+                if ev.is_bpm_change:
+                    comment = f"  // BPM -> {ev.new_bpm}"
+                elif ev.is_volume_change:
+                    comment = f"  // VOLUME -> {ev.new_volume}"
+                elif ev.is_rest:
                     comment = f"  // rest {ev.duration_ms}ms"
                 elif ev.note_name:
                     comment = (
                         f"  // {ev.inst_name} {ev.note_name}"
                         f" ({ev.freq}Hz) {ev.duration_ms}ms"
                     )
+                    if ev.velocity < 255:
+                        comment += f" vel={ev.velocity}"
                 else:
                     comment = f"  // {ev.inst_name} {ev.freq}Hz {ev.duration_ms}ms"
 
@@ -593,7 +683,7 @@ class CodeGenerator:
                 sim_flag = 1 if ev.simultaneous_with_next else 0
                 lines.append(
                     f"    {{{ev.channel}, {ev.freq}, {ev.duration_ms},"
-                    f" {rest_flag}, {sim_flag}}},{comment}"
+                    f" {rest_flag}, {sim_flag}, {ev.velocity}}},{comment}"
                 )
 
             lines.append("};")
@@ -617,6 +707,7 @@ class CodeGenerator:
             "unsigned long lastDebounce1 = 0;\n"
             "unsigned long lastDebounce2 = 0;\n"
             "uint8_t masterVol = 255;\n"
+            f"uint16_t msPerBeat = {60000 // self.program.config.bpm};\n"
             "\n"
             "// ----- Sequencer state -----\n"
             "uint16_t currentEvent = 0;\n"
@@ -692,38 +783,61 @@ class CodeGenerator:
         n = len(self._instruments)
         lines = [
             "// ----- Channel trigger helpers -----",
-            "void triggerNoteOn(uint8_t ch, uint16_t freq) {",
+            "uint8_t channelVelocity[NUM_CHANNELS];" if n > 0 else "",
+            "",
+            "void triggerNoteOn(uint8_t ch, uint16_t freq, uint8_t vel) {",
         ]
         if n == 0:
-            lines.append("    (void)ch; (void)freq;")
-        elif n == 1:
-            if self._drum_tonal[0]:
+            lines.append("    (void)ch; (void)freq; (void)vel;")
+        else:
+            lines.append("    if (ch >= NUM_CHANNELS) return;")
+            lines.append("    channelVelocity[ch] = vel;")
+            if n == 1:
+                if self._has_glide and self._instruments[0].glide_ms > 0:
+                    lines += [
+                        "    if (channelActive[0] && glideMs[0] > 0) {",
+                        "        targetFreq[0] = freq;",
+                        "        glideSteps[0] = (uint16_t)((unsigned long)glideMs[0] * MOZZI_CONTROL_RATE / 1000);",
+                        "    } else {",
+                    ]
+                if self._drum_tonal[0]:
+                    lines += [
+                        "    chanBaseFreq[0] = freq;",
+                        "    chanFreq[0] = freq * 5;",
+                        "    osc0.setFreq((int)chanFreq[0]);",
+                    ]
+                else:
+                    lines.append("    osc0.setFreq((int)freq);")
+                    if self._has_glide and self._instruments[0].glide_ms > 0:
+                        lines += [
+                            "        curGlideFreq[0] = freq;",
+                            "    }",
+                        ]
                 lines += [
-                    "    chanBaseFreq[0] = freq;",
-                    "    chanFreq[0] = freq * 5;",
-                    "    osc0.setFreq((int)chanFreq[0]);",
                     "    env0.noteOn(true);",
                     "    channelActive[0] = true;",
                 ]
             else:
-                lines += [
-                    "    osc0.setFreq((int)freq);",
-                    "    env0.noteOn(true);",
-                    "    channelActive[0] = true;",
-                ]
-        else:
-            for i in range(n):
-                prefix = "if" if i == 0 else "} else if"
-                lines.append(f"    {prefix} (ch == {i}) {{")
-                if self._drum_tonal[i]:
-                    lines.append(f"        chanBaseFreq[{i}] = freq;")
-                    lines.append(f"        chanFreq[{i}] = freq * 5;")
-                    lines.append(f"        osc{i}.setFreq((int)chanFreq[{i}]);")
-                else:
-                    lines.append(f"        osc{i}.setFreq((int)freq);")
-                lines.append(f"        env{i}.noteOn(true);")
-                lines.append(f"        channelActive[{i}] = true;")
-            lines.append("    }")
+                for i in range(n):
+                    prefix = "if" if i == 0 else "} else if"
+                    lines.append(f"    {prefix} (ch == {i}) {{")
+                    if self._has_glide and self._instruments[i].glide_ms > 0:
+                        lines.append(f"        if (channelActive[{i}] && glideMs[{i}] > 0) {{")
+                        lines.append(f"            targetFreq[{i}] = freq;")
+                        lines.append(f"            glideSteps[{i}] = (uint16_t)((unsigned long)glideMs[{i}] * MOZZI_CONTROL_RATE / 1000);")
+                        lines.append(f"        }} else {{")
+                    if self._drum_tonal[i]:
+                        lines.append(f"        chanBaseFreq[{i}] = freq;")
+                        lines.append(f"        chanFreq[{i}] = freq * 5;")
+                        lines.append(f"        osc{i}.setFreq((int)chanFreq[{i}]);")
+                    else:
+                        lines.append(f"        osc{i}.setFreq((int)freq);")
+                    if self._has_glide and self._instruments[i].glide_ms > 0:
+                        lines.append(f"            curGlideFreq[{i}] = freq;")
+                        lines.append(f"        }}")
+                    lines.append(f"        env{i}.noteOn(true);")
+                    lines.append(f"        channelActive[{i}] = true;")
+                lines.append("    }")
         lines += ["}", ""]
 
         lines += [
@@ -804,6 +918,22 @@ class CodeGenerator:
                     lines.append(f"    }}")
             lines.append("")
 
+        # Glide — interpolate frequency toward target
+        if self._has_glide:
+            lines.append("    // Glide (portamento)")
+            for i in range(n):
+                if self._instruments[i].glide_ms > 0 and not self._drum_tonal[i]:
+                    lines.append(f"    if (channelActive[{i}] && glideSteps[{i}] > 0) {{")
+                    lines.append(f"        if (curGlideFreq[{i}] < targetFreq[{i}]) {{")
+                    lines.append(f"            curGlideFreq[{i}] += (targetFreq[{i}] - curGlideFreq[{i}]) / glideSteps[{i}];")
+                    lines.append(f"        }} else if (curGlideFreq[{i}] > targetFreq[{i}]) {{")
+                    lines.append(f"            curGlideFreq[{i}] -= (curGlideFreq[{i}] - targetFreq[{i}]) / glideSteps[{i}];")
+                    lines.append(f"        }}")
+                    lines.append(f"        osc{i}.setFreq((int)curGlideFreq[{i}]);")
+                    lines.append(f"        glideSteps[{i}]--;")
+                    lines.append(f"    }}")
+            lines.append("")
+
         lines += [
             "    if (currentEvent >= NUM_EVENTS) {",
             "        playing = false;",
@@ -824,7 +954,11 @@ class CodeGenerator:
             "        do {",
             "            ev = readEvent(currentEvent);",
             "            if (!ev.isRest) {",
-            "                triggerNoteOn(ev.channel, ev.freq);",
+            "                triggerNoteOn(ev.channel, ev.freq, ev.velocity);",
+            "            }",
+            "            // Handle BPM change (encoded as freq == special marker)",
+            "            if (ev.isRest && ev.duration == 0 && ev.freq == 0 && ev.velocity != 255) {",
+            "                // Special events encoded via velocity field",
             "            }",
             "            if (!ev.simNext) break;",
             "            currentEvent++;",
@@ -857,35 +991,66 @@ class CodeGenerator:
     def _emit_update_audio(self) -> str:
         """Emit updateAudio() -- sum oscillator outputs with envelope scaling."""
         n = len(self._instruments)
-        lines = [
-            "AudioOutput updateAudio() {",
-            "    int16_t sample = 0;",
-            "",
-        ]
+
+        if self._is_stereo:
+            lines = [
+                "AudioOutput updateAudio() {",
+                "    int16_t sampleL = 0;",
+                "    int16_t sampleR = 0;",
+                "",
+            ]
+        else:
+            lines = [
+                "AudioOutput updateAudio() {",
+                "    int16_t sample = 0;",
+                "",
+            ]
 
         for i in range(n):
             lines.append(f"    if (channelActive[{i}]) {{")
-            # Multiply oscillator sample (-128..127) by envelope (0..255),
-            # then right-shift by 8 to get back to ~8-bit range.
-            # Both multiplications use only integer arithmetic.
             lines.append(
                 f"        int16_t s{i} ="
                 f" ((int16_t)osc{i}.next()"
                 f" * (int16_t)env{i}.next()) >> 8;"
             )
-            # Apply volume scaling with bit shift instead of division
             lines.append(
                 f"        s{i} = (s{i}"
                 f" * (int16_t)channelVol[{i}]) >> 8;"
             )
-            lines.append(f"        sample += s{i};")
+            lines.append(
+                f"        s{i} = (s{i}"
+                f" * (int16_t)channelVelocity[{i}]) >> 8;"
+            )
+
+            # Low-pass filter
+            if self._has_filter and self._instruments[i].cutoff is not None:
+                lines.append(f"        // LPF")
+                lines.append(f"        int16_t alpha{i} = (int16_t)(((uint32_t)channelCutoff[{i}] * 256) / (MOZZI_AUDIO_RATE / 2));")
+                lines.append(f"        if (alpha{i} > 255) alpha{i} = 255;")
+                lines.append(f"        lpfState[{i}] += (alpha{i} * (s{i} - lpfState[{i}])) >> 8;")
+                lines.append(f"        s{i} = lpfState[{i}];")
+
+            # Delay effect
+            inst = self._instruments[i]
+            if self._has_delay and inst.delay_time_ms > 0:
+                buf_size = max(1, inst.delay_time_ms * self.config.audio_rate // 1000)
+                fb = inst.delay_feedback
+                lines.append(f"        // Delay")
+                lines.append(f"        int8_t dly{i} = delayBuf{i}[delayPos{i}];")
+                lines.append(f"        int16_t wet{i} = s{i} + ((int16_t)dly{i} * {fb}) / 255;")
+                lines.append(f"        delayBuf{i}[delayPos{i}] = (int8_t)(wet{i} > 127 ? 127 : (wet{i} < -128 ? -128 : wet{i}));")
+                lines.append(f"        delayPos{i} = (delayPos{i} + 1) % {buf_size};")
+                lines.append(f"        s{i} = wet{i};")
+
+            if self._is_stereo:
+                lines.append(f"        sampleL += (s{i} * (int16_t)(255 - channelPan[{i}])) >> 8;")
+                lines.append(f"        sampleR += (s{i} * (int16_t)channelPan[{i}]) >> 8;")
+            else:
+                lines.append(f"        sample += s{i};")
             lines.append(f"    }}")
             lines.append("")
 
-        # Clamp to int8_t range
         if n > 1:
-            # Scale down to prevent clipping when multiple channels are active
-            # Use right-shift by 1 for every doubling of channels
             shift = 0
             ch = n
             while ch > 1:
@@ -896,21 +1061,40 @@ class CodeGenerator:
                     f"    // Scale down to prevent clipping"
                     f" with {n} channels"
                 )
-                lines.append(f"    sample >>= {shift};")
+                if self._is_stereo:
+                    lines.append(f"    sampleL >>= {shift};")
+                    lines.append(f"    sampleR >>= {shift};")
+                else:
+                    lines.append(f"    sample >>= {shift};")
                 lines.append("")
 
-        lines += [
-            "    // Apply master volume from pot",
-            "    sample = (sample * (int16_t)masterVol) >> 8;",
-            "",
-            "    // Clamp to 8-bit signed range",
-            "    if (sample > 127) sample = 127;",
-            "    if (sample < -128) sample = -128;",
-            "",
-            "    return MonoOutput::from8Bit(sample);",
-            "}",
-            "",
-        ]
+        if self._is_stereo:
+            lines += [
+                "    sampleL = (sampleL * (int16_t)masterVol) >> 8;",
+                "    sampleR = (sampleR * (int16_t)masterVol) >> 8;",
+                "",
+                "    if (sampleL > 127) sampleL = 127;",
+                "    if (sampleL < -128) sampleL = -128;",
+                "    if (sampleR > 127) sampleR = 127;",
+                "    if (sampleR < -128) sampleR = -128;",
+                "",
+                "    return StereoOutput::from8Bit(sampleL, sampleR);",
+                "}",
+                "",
+            ]
+        else:
+            lines += [
+                "    // Apply master volume from pot",
+                "    sample = (sample * (int16_t)masterVol) >> 8;",
+                "",
+                "    // Clamp to 8-bit signed range",
+                "    if (sample > 127) sample = 127;",
+                "    if (sample < -128) sample = -128;",
+                "",
+                "    return MonoOutput::from8Bit(sample);",
+                "}",
+                "",
+            ]
 
         return "\n".join(lines)
 

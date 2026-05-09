@@ -1,0 +1,19 @@
+BPM 100
+
+INSTRUMENT synth:
+    TYPE SYNTH
+    WAVE SAW
+    ADSR 10 50 300 150
+    VOLUME 200
+    GLIDE 150
+
+SEQUENCE slide:
+    PLAY synth C4 1
+    PLAY synth E4 1
+    PLAY synth G4 1
+    PLAY synth C5 1
+    PLAY synth G4 1
+    PLAY synth E4 1
+    PLAY synth C4 2
+
+PLAY_SEQUENCE slide
