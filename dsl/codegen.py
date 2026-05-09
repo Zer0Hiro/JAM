@@ -127,14 +127,16 @@ class CodeGenerator:
         code = CodeGenerator(program).generate()
     """
 
-    def __init__(self, program: Program) -> None:
+    def __init__(self, program: Program, audio_pin: Optional[int] = None) -> None:
         """Initialize the code generator.
 
         Args:
             program: A validated Program AST.
+            audio_pin: Optional GPIO pin number for PWM audio output (ESP32).
         """
         self.program = program
         self.config = program.config
+        self.audio_pin = audio_pin
 
         # Build ordered list of instruments and channel index mapping
         self._instruments: list[InstrumentDef] = list(program.instruments.values())
@@ -391,8 +393,14 @@ class CodeGenerator:
         lines = [
             f"#define MOZZI_AUDIO_RATE {self.config.audio_rate}",
             f"#define MOZZI_CONTROL_RATE {self.config.control_rate}",
-            "",
         ]
+        if self.audio_pin is not None:
+            if self.audio_pin in (25, 26):
+                lines.append("#define MOZZI_OUTPUT_MODE MOZZI_OUTPUT_I2S_DAC")
+            else:
+                lines.append("#define MOZZI_OUTPUT_MODE MOZZI_OUTPUT_PWM")
+                lines.append(f"#define MOZZI_AUDIO_PIN_1 {self.audio_pin}")
+        lines.append("")
         return "\n".join(lines)
 
     def _emit_includes(self) -> str:
@@ -511,6 +519,20 @@ class CodeGenerator:
     def _emit_sequencer_state(self) -> str:
         """Emit sequencer state variables."""
         return (
+            "// ----- Hardware pins -----\n"
+            "#define BTN_PLAY  18\n"
+            "#define BTN_RESTART 19\n"
+            "#define POT_VOL   32\n"
+            "#define POT_FREQ  34\n"
+            "\n"
+            "// ----- Button state -----\n"
+            "bool playing = false;\n"
+            "bool lastBtn1 = HIGH;\n"
+            "bool lastBtn2 = HIGH;\n"
+            "unsigned long lastDebounce1 = 0;\n"
+            "unsigned long lastDebounce2 = 0;\n"
+            "uint8_t masterVol = 255;\n"
+            "\n"
             "// ----- Sequencer state -----\n"
             "uint16_t currentEvent = 0;\n"
             "uint16_t groupStart = 0;\n"
@@ -530,6 +552,10 @@ class CodeGenerator:
         """Emit setup() function."""
         lines = [
             "void setup() {",
+            "    Serial.begin(115200);",
+            "    Serial.println(\"JEM sketch booted\");",
+            "    pinMode(BTN_PLAY, INPUT_PULLUP);",
+            "    pinMode(BTN_RESTART, INPUT_PULLUP);",
             f"    startMozzi(MOZZI_CONTROL_RATE);",
             "",
         ]
@@ -642,6 +668,40 @@ class CodeGenerator:
 
         lines = [
             "void updateControl() {",
+            "    // Read volume pot (GPIO 32)",
+            "    int potRaw = mozziAnalogRead(POT_VOL);",
+            "    masterVol = (potRaw < 10) ? 255 : map(potRaw, 0, 4095, 0, 255);",
+            "",
+            "    // BTN_PLAY (GPIO 18) — toggle play/stop",
+            "    bool btn1 = digitalRead(BTN_PLAY);",
+            "    if (btn1 == LOW && lastBtn1 == HIGH",
+            "        && (millis() - lastDebounce1 > 50)) {",
+            "        lastDebounce1 = millis();",
+            "        playing = !playing;",
+            "        Serial.print(\"BTN_PLAY -> playing=\");",
+            "        Serial.println(playing);",
+            "        if (playing) {",
+            "            currentEvent = 0;",
+            "            eventTriggered = false;",
+            "            eventStartTime = mozziMicros();",
+            "        }",
+            "    }",
+            "    lastBtn1 = btn1;",
+            "",
+            "    // BTN_RESTART (GPIO 19) — restart from beginning",
+            "    bool btn2 = digitalRead(BTN_RESTART);",
+            "    if (btn2 == LOW && lastBtn2 == HIGH",
+            "        && (millis() - lastDebounce2 > 50)) {",
+            "        lastDebounce2 = millis();",
+            "        currentEvent = 0;",
+            "        eventTriggered = false;",
+            "        eventStartTime = mozziMicros();",
+            "        playing = true;",
+            "    }",
+            "    lastBtn2 = btn2;",
+            "",
+            "    if (!playing) return;",
+            "",
             "    // Update all active envelopes",
         ]
         for i in range(n):
@@ -661,9 +721,10 @@ class CodeGenerator:
 
         lines += [
             "    if (currentEvent >= NUM_EVENTS) {",
+            "        playing = false;",
             "        currentEvent = 0;",
             "        eventTriggered = false;",
-            "        eventStartTime = mozziMicros();",
+            "        return;",
             "    }",
             "",
             "    NoteEvent ev = readEvent(currentEvent);",
@@ -754,6 +815,9 @@ class CodeGenerator:
                 lines.append("")
 
         lines += [
+            "    // Apply master volume from pot",
+            "    sample = (sample * (int16_t)masterVol) >> 8;",
+            "",
             "    // Clamp to 8-bit signed range",
             "    if (sample > 127) sample = 127;",
             "    if (sample < -128) sample = -128;",
@@ -774,13 +838,14 @@ class CodeGenerator:
         )
 
 
-def generate(program: Program) -> str:
+def generate(program: Program, audio_pin: Optional[int] = None) -> str:
     """Convenience function: generate C++ from a Program AST.
 
     Args:
         program: A validated Program AST.
+        audio_pin: Optional GPIO pin number for PWM audio output (ESP32).
 
     Returns:
         Complete Mozzi 2.0 C++ sketch as a string.
     """
-    return CodeGenerator(program).generate()
+    return CodeGenerator(program, audio_pin=audio_pin).generate()

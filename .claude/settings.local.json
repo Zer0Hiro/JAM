@@ -8,7 +8,20 @@
       "Bash(apt list *)",
       "Bash(dpkg -l python3-pytest)",
       "Bash(pip install *)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(xargs cat)",
+      "Bash(curl -s -X POST http://localhost:5050/api/compile -H 'Content-Type: application/json' -d '{\"source\": \"BPM 120\\\\n\\\\nINSTRUMENT lead:\\\\n    TYPE SYNTH\\\\n    WAVE SAW\\\\n    ADSR 10 50 200 100\\\\n    VOLUME 180\\\\n\\\\nSEQUENCE main:\\\\n    PLAY lead C4 1\\\\n    PLAY lead E4 1\\\\n    PLAY lead G4 1\\\\n\\\\nPLAY_SEQUENCE main\"}')",
+      "Bash(curl *)",
+      "Bash(pio --version)",
+      "Bash(pip show *)",
+      "Bash(pip3 show *)",
+      "Bash(npx vite *)",
+      "Bash(pio run *)",
+      "Bash(git log *)",
+      "Read(//dev/**)",
+      "Read(//dev/serial/**)",
+      "Bash(pio device *)",
+      "Bash(grep -E \"\\\\.\\(jam|py\\)$\")"
     ]
   }
 }
