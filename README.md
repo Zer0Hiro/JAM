@@ -65,7 +65,7 @@ src/main.cpp          Generated sketch output
 
 ## Language Overview
 
-JAM files define instruments, sequences, patterns, and an arrangement. For the full syntax reference, see **[docs/SyntaxGuide.md](docs/SyntaxGuide.md)**.
+JAM files define instruments, sequences, patterns, and an arrangement. For the full syntax reference, see **[Syntax documentaion](docs/SyntaxGuide.md)**.
 
 ### Instruments
 
