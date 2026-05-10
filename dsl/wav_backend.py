@@ -595,6 +595,19 @@ class WavRenderer:
                 delay_bufs[di] = [0.0] * buf_len
                 delay_positions[di] = 0
 
+        # Reverb buffers per instrument (multi-tap comb filter)
+        _REVERB_TAPS_MS = [30, 50, 80, 113]
+        reverb_bufs: dict[int, list[list[float]]] = {}
+        reverb_positions: dict[int, list[int]] = {}
+        for di, inst in enumerate(self._instruments):
+            if inst.reverb > 0:
+                bufs = []
+                for tap_ms in _REVERB_TAPS_MS:
+                    tap_len = max(1, int(tap_ms / 1000.0 * WAV_SAMPLE_RATE))
+                    bufs.append([0.0] * tap_len)
+                reverb_bufs[di] = bufs
+                reverb_positions[di] = [0] * len(_REVERB_TAPS_MS)
+
         # LPF state per instrument
         lpf_states: dict[int, float] = {}
         for di, inst in enumerate(self._instruments):
@@ -630,7 +643,13 @@ class WavRenderer:
                     di in delay_bufs and any(abs(v) > 0.001 for v in delay_bufs[di])
                     for di in delay_bufs
                 )
-                if not has_active_delay and not sustained:
+                has_active_reverb = any(
+                    di in reverb_bufs and any(
+                        abs(v) > 0.001 for tap_buf in reverb_bufs[di] for v in tap_buf
+                    )
+                    for di in reverb_bufs
+                )
+                if not has_active_delay and not has_active_reverb and not sustained:
                     if self._is_stereo:
                         all_samples.extend([0] * (num_samples * 2))
                     else:
@@ -641,7 +660,7 @@ class WavRenderer:
                         sn[3] += advance_s
                     continue
 
-                # Process delay tails and sustained notes during REST
+                # Process delay/reverb tails and sustained notes during REST
                 for s in range(num_samples):
                     mixed_l = 0.0
                     mixed_r = 0.0
@@ -652,10 +671,25 @@ class WavRenderer:
                         pos = delay_positions[di]
                         delayed = buf[pos]
                         fb = inst.delay_feedback / 255.0
-                        wet = delayed * fb
-                        buf[pos] = wet
+                        buf[pos] = delayed * fb
                         delay_positions[di] = (pos + 1) % len(buf)
-                        sample_val = wet
+                        sample_val = delayed * 0.5
+                        if self._is_stereo:
+                            pan = self._pans[di]
+                            left_gain = max(0.0, 1.0 - pan) if pan > 0 else 1.0
+                            right_gain = max(0.0, 1.0 + pan) if pan < 0 else 1.0
+                            mixed_l += sample_val * left_gain
+                            mixed_r += sample_val * right_gain
+                        else:
+                            mixed += sample_val
+                    for di in reverb_bufs:
+                        rev_sum = 0.0
+                        for tap_i, tap_buf in enumerate(reverb_bufs[di]):
+                            tap_pos = reverb_positions[di][tap_i]
+                            rev_sum += tap_buf[tap_pos]
+                            tap_buf[tap_pos] = tap_buf[tap_pos] * 0.4
+                            reverb_positions[di][tap_i] = (tap_pos + 1) % len(tap_buf)
+                        sample_val = rev_sum / len(reverb_bufs[di])
                         if self._is_stereo:
                             pan = self._pans[di]
                             left_gain = max(0.0, 1.0 - pan) if pan > 0 else 1.0
@@ -716,11 +750,12 @@ class WavRenderer:
                 continue
 
             advance_s = last_event.duration_s
+            is_last_group = ev_idx >= len(self._events)
             has_sustaining = sustained or any(
                 ev.duration_s > advance_s + 0.001 for ev, _ in active_members
             )
             release_samples = int(max_release_s * WAV_SAMPLE_RATE)
-            total = num_samples if has_sustaining else num_samples + release_samples
+            total = num_samples + release_samples if is_last_group else num_samples
 
             phases = [0.0] * len(active_members)
             hp_prev_in = [0.0] * len(active_members)
@@ -812,17 +847,26 @@ class WavRenderer:
                         lpf_states[idx] += alpha_lpf * (sample_val - lpf_states[idx])
                         sample_val = lpf_states[idx]
 
-                    # Delay effect
+                    # Delay effect (echo)
                     if idx in delay_bufs and inst.delay_time_ms > 0:
                         buf = delay_bufs[idx]
                         pos = delay_positions[idx]
                         delayed = buf[pos]
                         fb = inst.delay_feedback / 255.0
-                        wet = sample_val + delayed * fb
-                        buf[pos] = wet
+                        buf[pos] = sample_val + delayed * fb
                         delay_positions[idx] = (pos + 1) % len(buf)
-                        dry_wet = inst.reverb / 255.0 if inst.reverb > 0 else 0.5
-                        sample_val = sample_val * (1.0 - dry_wet) + wet * dry_wet
+                        sample_val = sample_val + delayed * 0.5
+
+                    # Reverb effect (multi-tap comb filter)
+                    if idx in reverb_bufs:
+                        rev_mix = inst.reverb / 255.0 * 0.5
+                        rev_sum = 0.0
+                        for tap_i, tap_buf in enumerate(reverb_bufs[idx]):
+                            tap_pos = reverb_positions[idx][tap_i]
+                            rev_sum += tap_buf[tap_pos]
+                            tap_buf[tap_pos] = sample_val * 0.3 + tap_buf[tap_pos] * 0.4
+                            reverb_positions[idx][tap_i] = (tap_pos + 1) % len(tap_buf)
+                        sample_val = sample_val * (1.0 - rev_mix) + rev_sum * rev_mix / len(reverb_bufs[idx])
 
                     if self._is_stereo:
                         pan = self._pans[idx]
@@ -875,7 +919,8 @@ class WavRenderer:
                 if sn[3] < total_note_s:
                     new_sustained.append(sn)
             for m_idx, (ev, idx) in enumerate(active_members):
-                if ev.duration_s > advance_s + 0.001:
+                total_with_release = ev.duration_s + self._envelopes[idx].release_s
+                if total_with_release > advance_s + 0.001:
                     osc_fn = _OSCILLATORS.get(self._instruments[idx].wave, _sin_sample)
                     new_sustained.append([ev, idx, ev.duration_s, advance_s, phases[m_idx], osc_fn])
             sustained = new_sustained
@@ -911,12 +956,16 @@ class WavRenderer:
             Total duration in seconds.
         """
         total = 0.0
+        last_release = 0.0
         for ev in self._events:
             if ev.simultaneous_with_next:
                 continue
             total += ev.duration_s
             if not ev.is_rest and ev.inst_index < len(self._envelopes):
-                total += self._envelopes[ev.inst_index].release_s
+                last_release = self._envelopes[ev.inst_index].release_s
+            else:
+                last_release = 0.0
+        total += last_release
         return total
 
 
