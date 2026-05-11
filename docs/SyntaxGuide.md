@@ -28,6 +28,9 @@ Set at the top level. All optional — defaults shown.
 BPM 120              # tempo in beats per minute (1-300)
 AUDIO_RATE 16384     # Mozzi audio sample rate (16384 or 32768)
 CONTROL_RATE 64      # Mozzi control loop rate in Hz
+KEY C4 MAJOR         # lock notes to C major scale
+SWING 30             # swing feel for offbeat 8th notes
+HUMANIZE 10          # random timing variation per note
 ```
 
 | Setting | Default | Valid Values | Description |
@@ -35,6 +38,9 @@ CONTROL_RATE 64      # Mozzi control loop rate in Hz
 | `BPM` | 120 | 1–300 | Tempo in beats per minute |
 | `AUDIO_RATE` | 16384 | 16384, 32768 | Mozzi audio sample rate |
 | `CONTROL_RATE` | 64 | positive integer | Mozzi control loop rate in Hz |
+| `KEY` | none | `KEY <root> <scale>` | Lock notes to a musical scale (see [Key & Scale](#key--scale)) |
+| `SWING` | 0 | 0–100 | Swing amount — delays offbeat 8th notes (50 = triplet feel) |
+| `HUMANIZE` | 0 | 0–50 | Random timing offset per note in ms (adds human feel) |
 
 ---
 
@@ -68,7 +74,7 @@ INSTRUMENT kick:
 | Property | Required | Values | Description |
 |----------|----------|--------|-------------|
 | `TYPE` | yes | `SYNTH`, `DRUM` | Melodic synth or drum hit |
-| `WAVE` | yes | `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE` | Oscillator waveform |
+| `WAVE` | yes | `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `PLUCK` | Oscillator waveform |
 | `ADSR` | no | `attack decay sustain release` (all in ms) | Envelope shape (SYNTH only) |
 | `VOLUME` | no | `0`–`255` (default: `200`) | Channel volume |
 | `FREQ` | no | integer Hz | Fixed frequency (DRUM only) |
@@ -79,6 +85,10 @@ INSTRUMENT kick:
 | `DELAY` | no | `time_ms feedback` (0–2000, 0–255) | Echo delay time and feedback |
 | `GLIDE` | no | `0`–`1000` ms (default: `0`) | Portamento / pitch slide time |
 | `PAN` | no | `0`–`255` (default: `127`) | Stereo pan (0=left, 127=center, 255=right) |
+| `LFO` | no | `rate depth VOLUME\|PITCH` | Low Frequency Oscillator (see [LFO](#lfo)) |
+| `VOICES` | no | `1`–`4` (default: `1`) | Number of detuned oscillator voices (unison) |
+| `DETUNE` | no | `0`–`100` cents (default: `0`) | Detune spread between voices |
+| `CHORUS` | no | `0`–`255` (default: `0`) | Chorus effect wet/dry mix |
 
 ### Waveforms
 
@@ -89,6 +99,62 @@ INSTRUMENT kick:
 | `SQUARE` | Square wave — hollow, retro |
 | `TRIANGLE` | Triangle — softer than square, mellow |
 | `NOISE` | White noise — percussion, hi-hats, snares |
+| `PLUCK` | Karplus-Strong string — guitar, harp, pizzicato |
+
+### LFO
+
+LFO (Low Frequency Oscillator) adds slow modulation to volume or pitch. You can apply one LFO to VOLUME and one to PITCH on the same instrument.
+
+```
+INSTRUMENT wobble_bass:
+    TYPE SYNTH
+    WAVE SAW
+    ADSR 5 40 300 120
+    VOLUME 200
+    LFO 4.0 120 VOLUME     # 4 Hz tremolo, depth 120
+    LFO 2.0 30 PITCH       # 2 Hz vibrato, depth 30 cents
+```
+
+#### LFO syntax
+
+```
+LFO <rate> <depth> <target>
+```
+
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| `rate` | 0.1–20.0 Hz | Oscillation speed (>10 Hz approaches audio range) |
+| `depth` | 0–255 | Modulation intensity |
+| `target` | `VOLUME` or `PITCH` | What the LFO modulates |
+
+- **VOLUME LFO** — creates tremolo effect. Depth controls amplitude swing (255 = full 0-to-max)
+- **PITCH LFO** — creates vibrato effect. Depth is in cents (100 cents = 1 semitone)
+
+### Unison / Detune / Chorus
+
+Stack multiple detuned copies of an oscillator for a thick, wide sound.
+
+```
+INSTRUMENT supersaw:
+    TYPE SYNTH
+    WAVE SAW
+    VOICES 3
+    DETUNE 20
+    CHORUS 80
+    ADSR 10 50 200 100
+    VOLUME 180
+```
+
+| Property | Range | Default | Description |
+|----------|-------|---------|-------------|
+| `VOICES` | 1–4 | 1 | Number of oscillator copies |
+| `DETUNE` | 0–100 | 0 | Spread between voices in cents |
+| `CHORUS` | 0–255 | 0 | Short modulated delay for width |
+
+- `VOICES > 2` warns about RAM usage on AVR targets
+- `DETUNE > 0` requires `VOICES > 1` (otherwise it's an error)
+- `DETUNE > 50` warns about potentially out-of-tune results
+- `VOICES` and `DETUNE` have no effect on DRUM instruments
 
 ### ADSR Envelope
 
@@ -127,8 +193,8 @@ SEQUENCE melody:
 ### PLAY syntax
 
 ```
-PLAY <instrument> <note> <duration> [velocity]
-PLAY <instrument> [C4 E4 G4] <duration> [velocity]     # chord
+PLAY <instrument> <note> <duration> [velocity] [REVERB:<value>] [DELAY:<time>:<feedback>]
+PLAY <instrument> [C4 E4 G4] <duration> [velocity] [REVERB:<value>] [DELAY:<time>:<feedback>]
 ```
 
 - **instrument** — must match a defined `INSTRUMENT` name
@@ -136,12 +202,28 @@ PLAY <instrument> [C4 E4 G4] <duration> [velocity]     # chord
 - **chord** — bracket notation `[note note note]` for polyphonic playback (min 2 notes)
 - **duration** — float, in beats relative to BPM (e.g. `0.25` = sixteenth note at 4/4)
 - **velocity** — optional, `0`–`255`. Per-note volume scaling. Omit for full instrument volume
+- **REVERB:value** — optional per-note reverb override (0–255), replaces instrument's reverb for this note
+- **DELAY:time:feedback** — optional per-note delay override (time 0–2000ms, feedback 0–255)
 
 For drums without a melodic pitch, omit the note:
 
 ```
 PLAY kick 1             # drum hit, 1 beat duration
 ```
+
+### Per-note Effect Overrides
+
+Override an instrument's reverb or delay settings for individual notes:
+
+```
+SEQUENCE melody:
+    PLAY lead C4 1 200 REVERB:200          # extra reverb on this note
+    PLAY lead E4 1                          # normal instrument reverb
+    PLAY lead G4 1 180 DELAY:500:120       # longer delay on this note
+    PLAY lead C5 1 200 REVERB:180 DELAY:400:100   # both overrides
+```
+
+Overrides require velocity to be specified first. They only work on instruments that already have the corresponding effect configured (REVERB or DELAY).
 
 ### REST syntax
 
@@ -183,8 +265,8 @@ PATTERN basic_beat:
 ### BEAT syntax
 
 ```
-BEAT <position>: <instrument> [note] [duration] [velocity]
-BEAT <position>: <instrument> [C4 E4 G4] [duration] [velocity]
+BEAT <position>: <instrument> [note] [duration] [velocity] [REVERB:<value>] [DELAY:<time>:<feedback>]
+BEAT <position>: <instrument> [C4 E4 G4] [duration] [velocity] [REVERB:<value>] [DELAY:<time>:<feedback>]
 ```
 
 - **position** — float, 1-based (1 = first beat of bar). Fractional = offbeats (e.g. `1.5`, `2.5`).
@@ -192,6 +274,7 @@ BEAT <position>: <instrument> [C4 E4 G4] [duration] [velocity]
 - **note** — optional pitch for synth instruments in patterns
 - **duration** — optional, in beats
 - **velocity** — optional, `0`–`255`. Per-hit volume scaling
+- **REVERB:value** / **DELAY:time:feedback** — optional per-note effect overrides (same as PLAY)
 - Default bar length: 4 beats (4/4 time)
 
 ### Simultaneous playback in patterns
@@ -288,6 +371,26 @@ LOOP 4:
 
 The body can contain `PLAY_SEQUENCE`, `PLAY_PATTERN`, and `LOOP`.
 
+### FADE_IN / FADE_OUT
+
+Gradually ramp master volume up or down over a number of beats:
+
+```
+FADE_IN 4                    # fade from silence to full over 4 beats
+LOOP 4:
+    PLAY_SEQUENCE melody
+FADE_OUT 8                   # fade from current volume to silence over 8 beats
+LOOP 2:
+    PLAY_SEQUENCE outro
+```
+
+| Directive | Range | Description |
+|-----------|-------|-------------|
+| `FADE_IN` | 1–64 beats | Ramp volume from 0 to current master volume |
+| `FADE_OUT` | 1–64 beats | Ramp volume from current level to 0 |
+
+Fades are arrangement-level items — they apply to everything that follows until the fade completes. They work inside `LOOP` and `PLAY_TOGETHER` blocks.
+
 ### Dynamic BPM / VOLUME Changes
 
 `BPM` and `VOLUME` can appear as arrangement items to change tempo or master volume mid-song:
@@ -310,6 +413,43 @@ PLAY_SEQUENCE intro
 VOLUME 255
 PLAY_SEQUENCE climax
 ```
+
+---
+
+## Key & Scale
+
+Lock your composition to a musical scale with `KEY`. Notes outside the declared scale trigger a warning during compilation.
+
+```
+KEY C4 MAJOR          # C major scale
+KEY A3 MINOR          # A natural minor
+KEY D4 PENTATONIC     # D pentatonic
+KEY E4 BLUES          # E blues scale
+```
+
+### Syntax
+
+```
+KEY <root_note> <scale_type>
+```
+
+- **root_note** — any note (C4, D#3, etc.). The octave sets the reference; the pitch class defines the key.
+- **scale_type** — one of: `MAJOR`, `MINOR`, `DORIAN`, `PHRYGIAN`, `LYDIAN`, `MIXOLYDIAN`, `PENTATONIC`, `BLUES`
+
+### Available Scales
+
+| Scale | Intervals (semitones) | Character |
+|-------|----------------------|-----------|
+| `MAJOR` | 0, 2, 4, 5, 7, 9, 11 | Happy, bright |
+| `MINOR` | 0, 2, 3, 5, 7, 8, 10 | Sad, dark |
+| `DORIAN` | 0, 2, 3, 5, 7, 9, 10 | Jazzy minor |
+| `PHRYGIAN` | 0, 1, 3, 5, 7, 8, 10 | Spanish, exotic |
+| `LYDIAN` | 0, 2, 4, 6, 7, 9, 11 | Dreamy, bright |
+| `MIXOLYDIAN` | 0, 2, 4, 5, 7, 9, 10 | Bluesy major |
+| `PENTATONIC` | 0, 2, 4, 7, 9 | Simple, universal |
+| `BLUES` | 0, 3, 5, 6, 7, 10 | Bluesy, soulful |
+
+When `KEY` is set, the compiler warns on any `PLAY` note whose pitch class falls outside the scale. This helps catch wrong notes early.
 
 ---
 
@@ -595,6 +735,19 @@ The compiler runs semantic analysis after parsing and reports errors and warning
 | Delay feedback out of range | DELAY feedback not 0–255 |
 | Pan out of range | PAN not 0–255 |
 | BPM change out of range | Dynamic BPM not 1–300 |
+| SWING out of range | SWING not 0–100 |
+| HUMANIZE out of range | HUMANIZE not 0–50 |
+| FADE duration invalid | FADE_IN / FADE_OUT not 1–64 beats |
+| PLUCK on DRUM | PLUCK wave cannot be used with DRUM instruments |
+| LFO rate out of range | LFO rate not 0.1–20.0 |
+| LFO depth out of range | LFO depth not 0–255 |
+| VOICES out of range | VOICES not 1–4 |
+| DETUNE out of range | DETUNE not 0–100 |
+| CHORUS out of range | CHORUS not 0–255 |
+| DETUNE without VOICES | DETUNE > 0 requires VOICES > 1 |
+| Per-note REVERB out of range | REVERB override not 0–255 |
+| Per-note DELAY time out of range | DELAY time override not 0–2000 |
+| Per-note DELAY feedback out of range | DELAY feedback override not 0–255 |
 
 ### Warnings (compilation continues)
 
@@ -609,6 +762,15 @@ The compiler runs semantic analysis after parsing and reports errors and warning
 | PLAY_TOGETHER < 2 items | Use PLAY_SEQUENCE / PLAY_PATTERN directly |
 | GLIDE on DRUM | Portamento has no effect on drum instruments |
 | GLIDE > 1000 | Very long glide may sound unnatural |
+| GLIDE on PLUCK | Portamento doesn't apply well to plucked strings |
+| LFO rate > 10 | LFO rate approaches audio range |
+| LFO PITCH on DRUM | Pitch LFO has no effect on drums |
+| VOICES > 2 | Uses significant RAM on AVR targets |
+| VOICES on DRUM | Unison voices have no effect on drums |
+| DETUNE > 50 | Large detune may sound out of tune |
+| Note outside KEY | Note pitch class not in declared scale |
+| High SWING | SWING > 75 is extreme, may sound unmusical |
+| High HUMANIZE | HUMANIZE > 30 creates very loose timing |
 
 ---
 
@@ -618,10 +780,13 @@ The compiler runs semantic analysis after parsing and reports errors and warning
 program        := (config | instrument | sequence | pattern | arrangement)* EOF
 
 config         := ("BPM" | "AUDIO_RATE" | "CONTROL_RATE") NUMBER
+                 | "KEY" NOTE ("MAJOR"|"MINOR"|"DORIAN"|"PHRYGIAN"|"LYDIAN"|"MIXOLYDIAN"|"PENTATONIC"|"BLUES")
+                 | "SWING" NUMBER
+                 | "HUMANIZE" NUMBER
 
 instrument     := "INSTRUMENT" IDENT ":"
                       ("TYPE" ("SYNTH" | "DRUM")
-                     | "WAVE" ("SIN" | "SAW" | "SQUARE" | "TRIANGLE" | "NOISE")
+                     | "WAVE" ("SIN" | "SAW" | "SQUARE" | "TRIANGLE" | "NOISE" | "PLUCK")
                      | "ADSR" NUMBER NUMBER NUMBER NUMBER
                      | "VOLUME" NUMBER
                      | "FREQ" NUMBER
@@ -631,19 +796,27 @@ instrument     := "INSTRUMENT" IDENT ":"
                      | "REVERB" NUMBER
                      | "DELAY" NUMBER NUMBER
                      | "GLIDE" NUMBER
-                     | "PAN" NUMBER)+
+                     | "PAN" NUMBER
+                     | "LFO" NUMBER NUMBER ("VOLUME" | "PITCH")
+                     | "VOICES" NUMBER
+                     | "DETUNE" NUMBER
+                     | "CHORUS" NUMBER)+
 
 sequence       := "SEQUENCE" IDENT ":"
-                      ("PLAY" IDENT NOTE NUMBER [NUMBER]
-                     | "PLAY" IDENT "[" NOTE+ "]" NUMBER [NUMBER]
+                      ("PLAY" IDENT NOTE NUMBER [NUMBER] [fx_override]*
+                     | "PLAY" IDENT "[" NOTE+ "]" NUMBER [NUMBER] [fx_override]*
                      | "REST" NUMBER)+
 
-pattern        := "PATTERN" IDENT ":"
-                      ("BEAT" NUMBER ":" IDENT [NOTE] [NUMBER] [NUMBER])+
+fx_override    := "REVERB" ":" NUMBER
+                | "DELAY" ":" NUMBER ":" NUMBER
 
-arrangement    := (loop | play_seq | play_pat | play_together | bpm_change | vol_change)+
+pattern        := "PATTERN" IDENT ":"
+                      ("BEAT" NUMBER ":" IDENT [NOTE] [NUMBER] [NUMBER] [fx_override]*)+
+
+arrangement    := (loop | play_seq | play_pat | play_together | bpm_change | vol_change | fade)+
 bpm_change     := "BPM" NUMBER
 vol_change     := "VOLUME" NUMBER
+fade           := ("FADE_IN" | "FADE_OUT") NUMBER
 loop           := "LOOP" NUMBER ":" INDENT arrangement DEDENT
 play_seq       := "PLAY_SEQUENCE" IDENT
 play_pat       := "PLAY_PATTERN" IDENT
@@ -654,7 +827,7 @@ play_together  := "PLAY_TOGETHER" ":" INDENT arrangement DEDENT
 
 All keywords must be UPPERCASE:
 
-`BPM`, `AUDIO_RATE`, `CONTROL_RATE`, `INSTRUMENT`, `TYPE`, `SYNTH`, `DRUM`, `WAVE`, `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `ADSR`, `VOLUME`, `FREQ`, `DECAY`, `CUTOFF`, `RESONANCE`, `REVERB`, `DELAY`, `GLIDE`, `PAN`, `SEQUENCE`, `PATTERN`, `PLAY`, `REST`, `BEAT`, `LOOP`, `PLAY_SEQUENCE`, `PLAY_PATTERN`, `PLAY_TOGETHER`
+`BPM`, `AUDIO_RATE`, `CONTROL_RATE`, `KEY`, `SWING`, `HUMANIZE`, `MAJOR`, `MINOR`, `DORIAN`, `PHRYGIAN`, `LYDIAN`, `MIXOLYDIAN`, `PENTATONIC`, `BLUES`, `INSTRUMENT`, `TYPE`, `SYNTH`, `DRUM`, `WAVE`, `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `PLUCK`, `ADSR`, `VOLUME`, `FREQ`, `DECAY`, `CUTOFF`, `RESONANCE`, `REVERB`, `DELAY`, `GLIDE`, `PAN`, `LFO`, `PITCH`, `VOICES`, `DETUNE`, `CHORUS`, `SEQUENCE`, `PATTERN`, `PLAY`, `REST`, `BEAT`, `LOOP`, `PLAY_SEQUENCE`, `PLAY_PATTERN`, `PLAY_TOGETHER`, `FADE_IN`, `FADE_OUT`
 
 ### Identifiers
 
