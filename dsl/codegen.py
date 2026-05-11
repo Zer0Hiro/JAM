@@ -33,6 +33,8 @@ from .ast_nodes import (
     ADSRParams,
     BeatEvent,
     BPMChange,
+    FadeIn,
+    FadeOut,
     InstrumentDef,
     InstrumentKind,
     LoopBlock,
@@ -208,6 +210,11 @@ class CodeGenerator:
                     delay_feedback=base_inst.delay_feedback,
                     glide_ms=base_inst.glide_ms,
                     pan=base_inst.pan,
+                    lfo_volume=base_inst.lfo_volume,
+                    lfo_pitch=base_inst.lfo_pitch,
+                    voices=base_inst.voices,
+                    detune=base_inst.detune,
+                    chorus=base_inst.chorus,
                 )
                 new_idx = len(self._instruments)
                 self._instruments.append(clone)
@@ -264,6 +271,8 @@ class CodeGenerator:
                     channel=253, freq=item.volume, duration_ms=0,
                     is_rest=True, is_volume_change=True, new_volume=item.volume,
                 ))
+            elif isinstance(item, (FadeIn, FadeOut)):
+                pass  # TODO: implement fade in codegen
 
     def _flatten_sequence(self, name: str) -> None:
         """Flatten a named sequence into events."""
@@ -446,6 +455,8 @@ class CodeGenerator:
                     channel=253, freq=child.volume, duration_ms=0,
                     is_rest=True, is_volume_change=True, new_volume=child.volume,
                 ))
+            elif isinstance(child, (FadeIn, FadeOut)):
+                pass  # TODO: implement fade in codegen
             child_events = self._events[saved:]
             self._events = self._events[:saved]
             child_timelines.append(child_events)

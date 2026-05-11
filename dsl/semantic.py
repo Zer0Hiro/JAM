@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 
 from .ast_nodes import (
     BPMChange,
+    FadeIn,
+    FadeOut,
     InstrumentKind,
     LoopBlock,
     PlayNote,
@@ -24,7 +26,9 @@ from .ast_nodes import (
     PlaySequenceRef,
     PlayTogetherBlock,
     Program,
+    SCALE_INTERVALS,
     VolumeChange,
+    WaveType,
 )
 from .notes import is_valid_note, note_name_to_midi
 
@@ -146,6 +150,38 @@ def validate(program: Program) -> ValidationResult:
             result.warn(f"Instrument '{name}': glide on a drum instrument may sound unexpected")
         if inst.pan < 0 or inst.pan > 255:
             result.error(f"Instrument '{name}': pan {inst.pan} out of range 0-255")
+        if inst.wave == WaveType.PLUCK and inst.kind == InstrumentKind.DRUM:
+            result.error(f"Instrument '{name}': PLUCK waveform only valid for SYNTH")
+        if inst.wave == WaveType.PLUCK and inst.glide_ms > 0:
+            result.warn(f"Instrument '{name}': GLIDE has no effect on PLUCK synthesis")
+        if inst.wave == WaveType.PLUCK and inst.adsr and inst.adsr.sustain_ms > 0:
+            result.warn(f"Instrument '{name}': ADSR sustain ignored for PLUCK")
+        # LFO validation
+        for lfo, target_name in [(inst.lfo_volume, "VOLUME"), (inst.lfo_pitch, "PITCH")]:
+            if lfo is not None:
+                if lfo.rate < 0.1 or lfo.rate > 20.0:
+                    result.error(f"Instrument '{name}': LFO {target_name} rate must be 0.1-20.0 Hz")
+                if lfo.depth < 0 or lfo.depth > 255:
+                    result.error(f"Instrument '{name}': LFO {target_name} depth must be 0-255")
+                if lfo.rate > 10.0:
+                    result.warn(f"Instrument '{name}': LFO rate {lfo.rate} Hz above 10 Hz approaches audio range")
+        if inst.lfo_pitch is not None and inst.kind == InstrumentKind.DRUM:
+            result.warn(f"Instrument '{name}': LFO pitch has no effect on drums")
+        # VOICES / DETUNE / CHORUS validation
+        if inst.voices < 1 or inst.voices > 4:
+            result.error(f"Instrument '{name}': VOICES must be 1-4")
+        if inst.detune < 0 or inst.detune > 100:
+            result.error(f"Instrument '{name}': DETUNE must be 0-100 cents")
+        if inst.chorus < 0 or inst.chorus > 255:
+            result.error(f"Instrument '{name}': CHORUS must be 0-255")
+        if inst.detune > 0 and inst.voices <= 1:
+            result.error(f"Instrument '{name}': DETUNE requires VOICES > 1")
+        if inst.voices > 2:
+            result.warn(f"Instrument '{name}': VOICES > 2 uses significant RAM on AVR targets")
+        if inst.kind == InstrumentKind.DRUM and inst.voices > 1:
+            result.warn(f"Instrument '{name}': VOICES has no effect on drum instruments")
+        if inst.detune > 50:
+            result.warn(f"Instrument '{name}': DETUNE > 50 cents sounds very out of tune")
 
     if synth_count > _MAX_RECOMMENDED_SYNTHS:
         result.warn(
@@ -207,6 +243,12 @@ def validate(program: Program) -> ValidationResult:
                         f"Sequence '{seq_name}': velocity {ev.velocity} out of range 0-255",
                         ev.line,
                     )
+                if ev.reverb_override is not None and (ev.reverb_override < 0 or ev.reverb_override > 255):
+                    result.error(f"Sequence '{seq_name}': REVERB override {ev.reverb_override} out of range 0-255", ev.line)
+                if ev.delay_time_override is not None and (ev.delay_time_override < 0 or ev.delay_time_override > 2000):
+                    result.error(f"Sequence '{seq_name}': DELAY time override {ev.delay_time_override} out of range 0-2000", ev.line)
+                if ev.delay_feedback_override is not None and (ev.delay_feedback_override < 0 or ev.delay_feedback_override > 255):
+                    result.error(f"Sequence '{seq_name}': DELAY feedback override {ev.delay_feedback_override} out of range 0-255", ev.line)
 
     # --- Check patterns ---
     for pat_name, pat in program.patterns.items():
@@ -275,6 +317,12 @@ def validate(program: Program) -> ValidationResult:
                     f"Pattern '{pat_name}': velocity {ev.velocity} out of range 0-255",
                     ev.line,
                 )
+            if ev.reverb_override is not None and (ev.reverb_override < 0 or ev.reverb_override > 255):
+                result.error(f"Pattern '{pat_name}': REVERB override {ev.reverb_override} out of range 0-255", ev.line)
+            if ev.delay_time_override is not None and (ev.delay_time_override < 0 or ev.delay_time_override > 2000):
+                result.error(f"Pattern '{pat_name}': DELAY time override {ev.delay_time_override} out of range 0-2000", ev.line)
+            if ev.delay_feedback_override is not None and (ev.delay_feedback_override < 0 or ev.delay_feedback_override > 255):
+                result.error(f"Pattern '{pat_name}': DELAY feedback override {ev.delay_feedback_override} out of range 0-255", ev.line)
 
     # --- Check arrangement references ---
     _check_arrangement(program.arrangement, seq_names, pat_names, result)
@@ -290,7 +338,79 @@ def validate(program: Program) -> ValidationResult:
             "Mozzi defaults to 16384 or 32768"
         )
 
+    # --- SWING / HUMANIZE checks ---
+    if program.config.swing < 0 or program.config.swing > 100:
+        result.error("SWING must be 0-100")
+    if program.config.swing > 80:
+        result.warn("SWING > 80 produces very extreme shuffle")
+    if program.config.humanize < 0 or program.config.humanize > 50:
+        result.error("HUMANIZE must be 0-50 ms")
+    if program.config.humanize > 30:
+        result.warn("HUMANIZE > 30ms may cause notes to overlap")
+
+    # --- KEY scale note checking ---
+    if program.config.key_root and program.config.key_scale:
+        _check_key_notes(program, result)
+
     return result
+
+
+_NOTE_BASES: dict[str, int] = {
+    "C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11,
+}
+
+
+def _note_pitch_class(note_name: str) -> int:
+    """Return the pitch class (0-11) of a note name like 'C#4'."""
+    letter = note_name[0].upper()
+    base = _NOTE_BASES.get(letter, 0)
+    rest = note_name[1:]
+    offset = 0
+    if rest and rest[0] in ("#", "s"):
+        offset = 1
+    elif rest and rest[0] == "b":
+        offset = -1
+    return (base + offset) % 12
+
+
+def _check_key_notes(program: Program, result: ValidationResult) -> None:
+    """Warn when notes fall outside the declared key/scale."""
+    root_name = program.config.key_root
+    scale = program.config.key_scale
+    root_pc = _NOTE_BASES.get(root_name[0].upper(), 0)
+    if len(root_name) > 1:
+        if root_name[1] == "#":
+            root_pc += 1
+        elif root_name[1] == "b":
+            root_pc -= 1
+    root_pc %= 12
+    intervals = SCALE_INTERVALS[scale]
+    scale_pcs = {(root_pc + iv) % 12 for iv in intervals}
+    key_label = f"{root_name} {scale.name}"
+
+    def check_note(note: str, context: str, line: int) -> None:
+        if not is_valid_note(note):
+            return
+        pc = _note_pitch_class(note)
+        if pc not in scale_pcs:
+            result.warn(f"{context}: note '{note}' is outside declared key of {key_label}", line)
+
+    for seq_name, seq in program.sequences.items():
+        for ev in seq.events:
+            if isinstance(ev, PlayNote):
+                if ev.note:
+                    check_note(ev.note, f"Sequence '{seq_name}'", ev.line)
+                if ev.notes:
+                    for n in ev.notes:
+                        check_note(n, f"Sequence '{seq_name}'", ev.line)
+
+    for pat_name, pat in program.patterns.items():
+        for ev in pat.events:
+            if ev.note:
+                check_note(ev.note, f"Pattern '{pat_name}'", ev.line)
+            if ev.notes:
+                for n in ev.notes:
+                    check_note(n, f"Pattern '{pat_name}'", ev.line)
 
 
 def _check_arrangement(
@@ -332,3 +452,13 @@ def _check_arrangement(
         elif isinstance(item, VolumeChange):
             if item.volume < 0 or item.volume > 255:
                 result.error(f"VOLUME {item.volume} out of range 0-255", item.line)
+        elif isinstance(item, FadeIn):
+            if item.duration_beats <= 0:
+                result.error("FADE_IN duration must be > 0", item.line)
+            if item.duration_beats > 64:
+                result.error("FADE_IN duration unreasonably long (max 64 beats)", item.line)
+        elif isinstance(item, FadeOut):
+            if item.duration_beats <= 0:
+                result.error("FADE_OUT duration must be > 0", item.line)
+            if item.duration_beats > 64:
+                result.error("FADE_OUT duration unreasonably long (max 64 beats)", item.line)

@@ -23,6 +23,38 @@ class WaveType(Enum):
     SQUARE = auto()
     TRIANGLE = auto()
     NOISE = auto()
+    PLUCK = auto()
+
+
+class ScaleType(Enum):
+    """Musical scale types for KEY declaration."""
+    MAJOR = auto()
+    MINOR = auto()
+    DORIAN = auto()
+    PHRYGIAN = auto()
+    LYDIAN = auto()
+    MIXOLYDIAN = auto()
+    PENTATONIC = auto()
+    BLUES = auto()
+
+
+SCALE_INTERVALS: dict[ScaleType, tuple[int, ...]] = {
+    ScaleType.MAJOR: (0, 2, 4, 5, 7, 9, 11),
+    ScaleType.MINOR: (0, 2, 3, 5, 7, 8, 10),
+    ScaleType.DORIAN: (0, 2, 3, 5, 7, 9, 10),
+    ScaleType.PHRYGIAN: (0, 1, 3, 5, 7, 8, 10),
+    ScaleType.LYDIAN: (0, 2, 4, 6, 7, 9, 11),
+    ScaleType.MIXOLYDIAN: (0, 2, 4, 5, 7, 9, 10),
+    ScaleType.PENTATONIC: (0, 2, 4, 7, 9),
+    ScaleType.BLUES: (0, 3, 5, 6, 7, 10),
+}
+
+
+@dataclass
+class LfoParams:
+    """LFO modulation parameters."""
+    rate: float = 1.0
+    depth: int = 0
 
 
 class InstrumentKind(Enum):
@@ -41,6 +73,10 @@ class Config:
     bpm: int = 120
     audio_rate: int = 16384
     control_rate: int = 64
+    swing: int = 0
+    humanize: int = 0
+    key_root: Optional[str] = None
+    key_scale: Optional[ScaleType] = None
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +125,11 @@ class InstrumentDef:
     delay_feedback: int = 0
     glide_ms: int = 0
     pan: int = 127
+    lfo_volume: Optional[LfoParams] = None
+    lfo_pitch: Optional[LfoParams] = None
+    voices: int = 1
+    detune: int = 0
+    chorus: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +152,9 @@ class PlayNote:
     notes: Optional[list[str]] = None
     duration_beats: float = 1.0
     velocity: Optional[int] = None
+    reverb_override: Optional[int] = None
+    delay_time_override: Optional[int] = None
+    delay_feedback_override: Optional[int] = None
     line: int = 0
 
 
@@ -144,6 +188,9 @@ class BeatEvent:
     notes: Optional[list[str]] = None
     duration_beats: Optional[float] = None
     velocity: Optional[int] = None
+    reverb_override: Optional[int] = None
+    delay_time_override: Optional[int] = None
+    delay_feedback_override: Optional[int] = None
     line: int = 0
 
 
@@ -220,6 +267,20 @@ class VolumeChange:
 
 
 @dataclass
+class FadeIn:
+    """Gradually ramp master volume from 0 to current over duration_beats."""
+    duration_beats: float = 4.0
+    line: int = 0
+
+
+@dataclass
+class FadeOut:
+    """Gradually ramp master volume from current to 0 over duration_beats."""
+    duration_beats: float = 4.0
+    line: int = 0
+
+
+@dataclass
 class LoopBlock:
     """A LOOP N: ... block in the arrangement.
 
@@ -229,7 +290,7 @@ class LoopBlock:
         line: Source line number.
     """
     count: int = 1
-    body: list[PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock | BPMChange | VolumeChange] = field(default_factory=list)
+    body: list[PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock | BPMChange | VolumeChange | FadeIn | FadeOut] = field(default_factory=list)
     line: int = 0
 
 
@@ -264,4 +325,4 @@ class Program:
     instruments: dict[str, InstrumentDef] = field(default_factory=dict)
     sequences: dict[str, Sequence] = field(default_factory=dict)
     patterns: dict[str, Pattern] = field(default_factory=dict)
-    arrangement: list[PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock | BPMChange | VolumeChange] = field(default_factory=list)
+    arrangement: list[PlaySequenceRef | PlayPatternRef | LoopBlock | PlayTogetherBlock | BPMChange | VolumeChange | FadeIn | FadeOut] = field(default_factory=list)

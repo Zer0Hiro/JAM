@@ -29,6 +29,8 @@ from .ast_nodes import (
     ADSRParams,
     BeatEvent,
     BPMChange,
+    FadeIn,
+    FadeOut,
     InstrumentDef,
     InstrumentKind,
     LoopBlock,
@@ -95,6 +97,24 @@ _OSCILLATORS = {
     WaveType.TRIANGLE: _triangle_sample,
     WaveType.NOISE: _noise_sample,
 }
+
+
+class KarplusStrong:
+    """Karplus-Strong plucked string synthesis."""
+
+    def __init__(self, freq: float, decay_ms: int = 0):
+        buf_len = max(2, int(WAV_SAMPLE_RATE / max(freq, 20.0)))
+        self.buffer = [random.uniform(-1.0, 1.0) for _ in range(buf_len)]
+        self.length = buf_len
+        self.ptr = 0
+        self.feedback = min(0.999, 0.9 + (decay_ms or 0) / 10000.0)
+
+    def next_sample(self) -> float:
+        out = self.buffer[self.ptr]
+        nxt = (self.ptr + 1) % self.length
+        self.buffer[self.ptr] = self.feedback * (self.buffer[self.ptr] + self.buffer[nxt]) * 0.5
+        self.ptr = nxt
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +222,12 @@ class WavEvent:
     new_bpm: int = 0
     is_volume_change: bool = False
     new_volume: int = 0
+    is_fade: bool = False
+    fade_direction: int = 0  # 1 = fade in, -1 = fade out
+    fade_duration_s: float = 0.0
+    reverb_override: Optional[int] = None
+    delay_time_override: Optional[int] = None
+    delay_feedback_override: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +289,18 @@ class WavRenderer:
         # Current BPM (mutable for dynamic automation)
         self._current_bpm = program.config.bpm
 
+        # Swing & humanize
+        self._swing = program.config.swing
+        self._humanize = program.config.humanize
+        self._humanize_rng = random.Random(hash(str(program.config.bpm)))
+
         # Flatten arrangement
         self._events: list[WavEvent] = []
         self._flatten_arrangement(program.arrangement)
+
+        # Apply swing and humanize to event timings
+        if self._swing > 0 or self._humanize > 0:
+            self._apply_swing_humanize()
 
     def _create_voice_channels(self, program: Program) -> None:
         """Scan for chords and create clone instrument channels for extra voices."""
@@ -303,6 +338,11 @@ class WavRenderer:
                     delay_feedback=base_inst.delay_feedback,
                     glide_ms=base_inst.glide_ms,
                     pan=base_inst.pan,
+                    lfo_volume=base_inst.lfo_volume,
+                    lfo_pitch=base_inst.lfo_pitch,
+                    voices=base_inst.voices,
+                    detune=base_inst.detune,
+                    chorus=base_inst.chorus,
                 )
                 new_idx = len(self._instruments)
                 self._instruments.append(clone)
@@ -333,6 +373,39 @@ class WavRenderer:
                     inst_index=0, freq=0.0, duration_s=0.0,
                     is_rest=True, is_volume_change=True, new_volume=item.volume,
                 ))
+            elif isinstance(item, (FadeIn, FadeOut)):
+                direction = 1 if isinstance(item, FadeIn) else -1
+                dur_s = self._beats_to_s(item.duration_beats)
+                self._events.append(WavEvent(
+                    inst_index=0, freq=0.0, duration_s=0.0,
+                    is_rest=True, is_fade=True,
+                    fade_direction=direction, fade_duration_s=dur_s,
+                ))
+
+    def _apply_swing_humanize(self) -> None:
+        """Adjust event durations in-place for swing and humanize."""
+        if not self._events:
+            return
+        swing_ratio = 0.5 + (self._swing / 200.0)
+        beat_s = 60.0 / self._current_bpm
+        half_beat_s = beat_s / 2.0
+        accumulated = 0.0
+        is_offbeat = False
+        for ev in self._events:
+            if ev.is_volume_change or ev.is_fade or ev.is_bpm_change:
+                continue
+            if self._swing > 0 and not ev.simultaneous_with_next:
+                if abs(ev.duration_s - half_beat_s) < 0.01:
+                    if is_offbeat:
+                        ev.duration_s = beat_s * (1.0 - swing_ratio)
+                    else:
+                        ev.duration_s = beat_s * swing_ratio
+                    is_offbeat = not is_offbeat
+            if self._humanize > 0 and not ev.is_rest and not ev.simultaneous_with_next:
+                offset_s = self._humanize_rng.uniform(
+                    -self._humanize / 1000.0, self._humanize / 1000.0
+                )
+                ev.duration_s = max(0.01, ev.duration_s + offset_s)
 
     def _flatten_sequence(self, name: str) -> None:
         """Flatten a named sequence into WavEvents."""
@@ -364,6 +437,9 @@ class WavRenderer:
                             is_rest=False,
                             simultaneous_with_next=not is_last,
                             velocity=vel,
+                            reverb_override=ev.reverb_override,
+                            delay_time_override=ev.delay_time_override,
+                            delay_feedback_override=ev.delay_feedback_override,
                         ))
                 else:
                     idx = self._inst_index.get(ev.instrument, 0)
@@ -380,6 +456,9 @@ class WavRenderer:
                         duration_s=self._beats_to_s(ev.duration_beats),
                         is_rest=False,
                         velocity=vel,
+                        reverb_override=ev.reverb_override,
+                        delay_time_override=ev.delay_time_override,
+                        delay_feedback_override=ev.delay_feedback_override,
                     ))
 
     def _flatten_pattern(self, name: str) -> None:
@@ -454,6 +533,9 @@ class WavRenderer:
                     is_rest=False,
                     simultaneous_with_next=not is_last,
                     velocity=vel,
+                    reverb_override=bev.reverb_override,
+                    delay_time_override=bev.delay_time_override,
+                    delay_feedback_override=bev.delay_feedback_override,
                 ))
 
             current_beat = next_pos
@@ -496,6 +578,14 @@ class WavRenderer:
                 self._events.append(WavEvent(
                     inst_index=0, freq=0.0, duration_s=0.0,
                     is_rest=True, is_volume_change=True, new_volume=child.volume,
+                ))
+            elif isinstance(child, (FadeIn, FadeOut)):
+                direction = 1 if isinstance(child, FadeIn) else -1
+                dur_s = self._beats_to_s(child.duration_beats)
+                self._events.append(WavEvent(
+                    inst_index=0, freq=0.0, duration_s=0.0,
+                    is_rest=True, is_fade=True,
+                    fade_direction=direction, fade_duration_s=dur_s,
                 ))
             child_timelines.append(self._events)
             self._events = saved
@@ -617,8 +707,43 @@ class WavRenderer:
         # Glide state: prev freq per instrument channel
         glide_prev_freq: dict[int, float] = {}
 
+        # Karplus-Strong state per instrument (for PLUCK waveform)
+        ks_engines: dict[int, KarplusStrong] = {}
+
+        # Chorus buffers per instrument (short modulated delay)
+        _CHORUS_BASE_MS = 20
+        _CHORUS_LFO_HZ = 0.5
+        _CHORUS_DEPTH_MS = 5
+        chorus_bufs: dict[int, list[float]] = {}
+        chorus_write_pos: dict[int, int] = {}
+        for di, inst in enumerate(self._instruments):
+            if inst.chorus > 0:
+                buf_len = max(1, int((_CHORUS_BASE_MS + _CHORUS_DEPTH_MS + 2) / 1000.0 * WAV_SAMPLE_RATE))
+                chorus_bufs[di] = [0.0] * buf_len
+                chorus_write_pos[di] = 0
+
+        # LFO phase accumulators per instrument
+        lfo_vol_phases: dict[int, float] = {}
+        lfo_pitch_phases: dict[int, float] = {}
+        for di, inst in enumerate(self._instruments):
+            if inst.lfo_volume:
+                lfo_vol_phases[di] = 0.0
+            if inst.lfo_pitch:
+                lfo_pitch_phases[di] = 0.0
+
+        # Global sample counter for LFO/chorus time tracking
+        global_sample_count = 0
+
+        # Fade state
+        fade_volume = 1.0
+        fade_step_per_sample = 0.0
+        fade_target = 1.0
+
         # Sustained notes: [ev, inst_idx, total_dur_s, elapsed_s, phase, osc_fn]
         sustained: list[list] = []
+
+        # Track cumulative time for fade progress
+        cumulative_samples = 0
 
         while ev_idx < len(self._events):
             # Collect simultaneous group
@@ -628,11 +753,20 @@ class WavRenderer:
                 group.append(self._events[ev_idx])
             ev_idx += 1
 
-            # Handle volume change events
-            if any(ev.is_volume_change for ev in group):
+            # Handle volume change and fade events
+            if any(ev.is_volume_change or ev.is_fade for ev in group):
                 for ev in group:
                     if ev.is_volume_change:
                         master_volume = ev.new_volume / 255.0
+                    if ev.is_fade:
+                        fade_samples = max(1, int(ev.fade_duration_s * WAV_SAMPLE_RATE))
+                        if ev.fade_direction > 0:  # fade in
+                            fade_volume = 0.0
+                            fade_target = 1.0
+                            fade_step_per_sample = 1.0 / fade_samples
+                        else:  # fade out
+                            fade_target = 0.0
+                            fade_step_per_sample = -fade_volume / fade_samples
                 continue
 
             last_event = group[-1]
@@ -717,15 +851,23 @@ class WavRenderer:
                             mixed_r += sv * right_gain
                         else:
                             mixed += sv
+                    vol_mult = master_volume * fade_volume
+                    if fade_step_per_sample != 0.0:
+                        fade_volume += fade_step_per_sample
+                        fade_volume = max(0.0, min(1.0, fade_volume))
+                        if (fade_step_per_sample > 0 and fade_volume >= fade_target) or \
+                           (fade_step_per_sample < 0 and fade_volume <= fade_target):
+                            fade_volume = fade_target
+                            fade_step_per_sample = 0.0
                     if self._is_stereo:
-                        mixed_l *= master_volume
-                        mixed_r *= master_volume
+                        mixed_l *= vol_mult
+                        mixed_r *= vol_mult
                         sl = int(mixed_l * 24000)
                         sr = int(mixed_r * 24000)
                         all_samples.append(max(-32768, min(32767, sl)))
                         all_samples.append(max(-32768, min(32767, sr)))
                     else:
-                        mixed *= master_volume
+                        mixed *= vol_mult
                         sv = int(mixed * 24000)
                         all_samples.append(max(-32768, min(32767, sv)))
                 advance_s = last_event.duration_s
@@ -763,6 +905,8 @@ class WavRenderer:
 
             m_is_drum_noise: list[bool] = []
             m_is_drum_tonal: list[bool] = []
+            m_is_pluck: list[bool] = []
+            m_ks: list[Optional[KarplusStrong]] = []
             m_hp_alpha: list[float] = []
             m_osc_fn = []
 
@@ -770,8 +914,14 @@ class WavRenderer:
                 inst_m = self._instruments[idx_m]
                 is_drum = inst_m.kind == InstrumentKind.DRUM
                 is_noise = inst_m.wave == WaveType.NOISE
+                is_pluck = inst_m.wave == WaveType.PLUCK and not is_drum
                 m_is_drum_noise.append(is_drum and is_noise)
                 m_is_drum_tonal.append(is_drum and not is_noise)
+                m_is_pluck.append(is_pluck)
+                if is_pluck:
+                    m_ks.append(KarplusStrong(ev_m.freq, inst_m.decay_ms or 0))
+                else:
+                    m_ks.append(None)
                 m_osc_fn.append(_OSCILLATORS.get(inst_m.wave, _sin_sample))
                 if is_drum and is_noise:
                     fc = max(20.0, ev_m.freq)
@@ -780,6 +930,23 @@ class WavRenderer:
                     m_hp_alpha.append(rc / (rc + dt))
                 else:
                     m_hp_alpha.append(0.0)
+
+            # Multi-voice detuned phase arrays
+            m_voice_phases: list[list[float]] = []
+            m_voice_freq_mults: list[list[float]] = []
+            for ev_mv, idx_mv in active_members:
+                inst_mv = self._instruments[idx_mv]
+                nv = inst_mv.voices if inst_mv.kind != InstrumentKind.DRUM else 1
+                if nv > 1 and inst_mv.detune > 0:
+                    offsets = []
+                    for vi in range(nv):
+                        cents = inst_mv.detune * (2.0 * vi / (nv - 1) - 1.0)
+                        offsets.append(2.0 ** (cents / 1200.0))
+                    m_voice_phases.append([0.0] * nv)
+                    m_voice_freq_mults.append(offsets)
+                else:
+                    m_voice_phases.append([0.0])
+                    m_voice_freq_mults.append([1.0])
 
             total_voices = len(active_members) + len(sustained)
             scale = 1.0 / (total_voices ** 0.5) if total_voices > 1 else 1.0
@@ -808,7 +975,13 @@ class WavRenderer:
 
                 for m_idx, (ev, idx) in enumerate(active_members):
                     envelope = self._envelopes[idx]
+                    inst = self._instruments[idx]
                     volume = self._volumes[idx] * ev.velocity
+
+                    # LFO volume modulation
+                    if idx in lfo_vol_phases and inst.lfo_volume:
+                        lfo_v = math.sin(2.0 * math.pi * lfo_vol_phases[idx])
+                        volume *= max(0.0, 1.0 + lfo_v * inst.lfo_volume.depth / 255.0)
 
                     # Compute current frequency (with glide)
                     cur_freq = ev.freq
@@ -816,7 +989,15 @@ class WavRenderer:
                         frac = s / m_glide_samples[m_idx]
                         cur_freq = m_glide_from[m_idx] * ((m_glide_to[m_idx] / max(0.1, m_glide_from[m_idx])) ** frac)
 
-                    if m_is_drum_noise[m_idx]:
+                    # LFO pitch modulation (depth in cents)
+                    if idx in lfo_pitch_phases and inst.lfo_pitch:
+                        lfo_p = math.sin(2.0 * math.pi * lfo_pitch_phases[idx])
+                        cur_freq *= 2.0 ** (lfo_p * inst.lfo_pitch.depth / 1200.0)
+
+                    if m_is_pluck[m_idx]:
+                        ks = m_ks[m_idx]
+                        osc_val = ks.next_sample()
+                    elif m_is_drum_noise[m_idx]:
                         raw_noise = random.uniform(-1.0, 1.0)
                         alpha = m_hp_alpha[m_idx]
                         hp_prev_out[m_idx] = alpha * (
@@ -831,35 +1012,55 @@ class WavRenderer:
                         while phases[m_idx] >= 1.0:
                             phases[m_idx] -= 1.0
                     else:
-                        osc_val = m_osc_fn[m_idx](phases[m_idx])
-                        phases[m_idx] += cur_freq / WAV_SAMPLE_RATE
-                        if phases[m_idx] >= 1.0:
-                            phases[m_idx] -= 1.0
+                        # Multi-voice detuned oscillator
+                        nv = len(m_voice_freq_mults[m_idx])
+                        if nv > 1:
+                            osc_sum = 0.0
+                            for vi in range(nv):
+                                osc_sum += m_osc_fn[m_idx](m_voice_phases[m_idx][vi])
+                                vf = cur_freq * m_voice_freq_mults[m_idx][vi]
+                                m_voice_phases[m_idx][vi] += vf / WAV_SAMPLE_RATE
+                                if m_voice_phases[m_idx][vi] >= 1.0:
+                                    m_voice_phases[m_idx][vi] -= 1.0
+                            osc_val = osc_sum / nv
+                        else:
+                            osc_val = m_osc_fn[m_idx](phases[m_idx])
+                            phases[m_idx] += cur_freq / WAV_SAMPLE_RATE
+                            if phases[m_idx] >= 1.0:
+                                phases[m_idx] -= 1.0
 
                     env_val = envelope.amplitude_at(t, ev.duration_s)
                     sample_val = osc_val * env_val * volume
 
                     # Low-pass filter
-                    inst = self._instruments[idx]
                     if idx in lpf_states and inst.cutoff is not None:
                         fc = inst.cutoff
                         alpha_lpf = (2.0 * math.pi * fc / WAV_SAMPLE_RATE) / (1.0 + 2.0 * math.pi * fc / WAV_SAMPLE_RATE)
                         lpf_states[idx] += alpha_lpf * (sample_val - lpf_states[idx])
                         sample_val = lpf_states[idx]
 
-                    # Delay effect (echo)
-                    if idx in delay_bufs and inst.delay_time_ms > 0:
+                    # Delay effect with per-note overrides
+                    eff_delay_ms = ev.delay_time_override if ev.delay_time_override is not None else inst.delay_time_ms
+                    eff_delay_fb = ev.delay_feedback_override if ev.delay_feedback_override is not None else inst.delay_feedback
+                    if idx in delay_bufs and eff_delay_ms > 0:
                         buf = delay_bufs[idx]
                         pos = delay_positions[idx]
-                        delayed = buf[pos]
-                        fb = inst.delay_feedback / 255.0
+                        if ev.delay_time_override is not None:
+                            rd = max(1, int(eff_delay_ms / 1000.0 * WAV_SAMPLE_RATE))
+                            rd = min(rd, len(buf))
+                            rpos = (pos + len(buf) - rd) % len(buf)
+                            delayed = buf[rpos]
+                        else:
+                            delayed = buf[pos]
+                        fb = eff_delay_fb / 255.0
                         buf[pos] = sample_val + delayed * fb
                         delay_positions[idx] = (pos + 1) % len(buf)
                         sample_val = sample_val + delayed * 0.5
 
-                    # Reverb effect (multi-tap comb filter)
-                    if idx in reverb_bufs:
-                        rev_mix = inst.reverb / 255.0 * 0.5
+                    # Reverb effect with per-note override
+                    eff_reverb = ev.reverb_override if ev.reverb_override is not None else inst.reverb
+                    if idx in reverb_bufs and eff_reverb > 0:
+                        rev_mix = eff_reverb / 255.0 * 0.5
                         rev_sum = 0.0
                         for tap_i, tap_buf in enumerate(reverb_bufs[idx]):
                             tap_pos = reverb_positions[idx][tap_i]
@@ -867,6 +1068,22 @@ class WavRenderer:
                             tap_buf[tap_pos] = sample_val * 0.3 + tap_buf[tap_pos] * 0.4
                             reverb_positions[idx][tap_i] = (tap_pos + 1) % len(tap_buf)
                         sample_val = sample_val * (1.0 - rev_mix) + rev_sum * rev_mix / len(reverb_bufs[idx])
+
+                    # Chorus effect (short modulated delay)
+                    if idx in chorus_bufs and inst.chorus > 0:
+                        cbuf = chorus_bufs[idx]
+                        cwpos = chorus_write_pos[idx]
+                        cbuf[cwpos] = sample_val
+                        g_t = global_sample_count / WAV_SAMPLE_RATE
+                        mod = math.sin(2.0 * math.pi * _CHORUS_LFO_HZ * g_t)
+                        d_ms = _CHORUS_BASE_MS + mod * _CHORUS_DEPTH_MS
+                        d_samps = max(1, int(d_ms / 1000.0 * WAV_SAMPLE_RATE))
+                        d_samps = min(d_samps, len(cbuf) - 1)
+                        crpos = (cwpos - d_samps) % len(cbuf)
+                        wet = cbuf[crpos]
+                        cmix = inst.chorus / 255.0
+                        sample_val = sample_val * (1.0 - cmix * 0.5) + wet * cmix * 0.5
+                        chorus_write_pos[idx] = (cwpos + 1) % len(cbuf)
 
                     if self._is_stereo:
                         pan = self._pans[idx]
@@ -876,6 +1093,19 @@ class WavRenderer:
                         mixed_r += sample_val * right_gain
                     else:
                         mixed += sample_val
+
+                # Advance LFO phases
+                for _ev_lfo, idx_lfo in active_members:
+                    inst_lfo = self._instruments[idx_lfo]
+                    if idx_lfo in lfo_vol_phases and inst_lfo.lfo_volume:
+                        lfo_vol_phases[idx_lfo] += inst_lfo.lfo_volume.rate / WAV_SAMPLE_RATE
+                        if lfo_vol_phases[idx_lfo] >= 1.0:
+                            lfo_vol_phases[idx_lfo] -= 1.0
+                    if idx_lfo in lfo_pitch_phases and inst_lfo.lfo_pitch:
+                        lfo_pitch_phases[idx_lfo] += inst_lfo.lfo_pitch.rate / WAV_SAMPLE_RATE
+                        if lfo_pitch_phases[idx_lfo] >= 1.0:
+                            lfo_pitch_phases[idx_lfo] -= 1.0
+                global_sample_count += 1
 
                 # Mix in sustained notes from previous groups
                 for sn in sustained:
@@ -898,15 +1128,23 @@ class WavRenderer:
                     else:
                         mixed += sv
 
+                vol_mult = scale * master_volume * fade_volume
+                if fade_step_per_sample != 0.0:
+                    fade_volume += fade_step_per_sample
+                    fade_volume = max(0.0, min(1.0, fade_volume))
+                    if (fade_step_per_sample > 0 and fade_volume >= fade_target) or \
+                       (fade_step_per_sample < 0 and fade_volume <= fade_target):
+                        fade_volume = fade_target
+                        fade_step_per_sample = 0.0
                 if self._is_stereo:
-                    mixed_l *= scale * master_volume
-                    mixed_r *= scale * master_volume
+                    mixed_l *= vol_mult
+                    mixed_r *= vol_mult
                     sl = int(mixed_l * 24000)
                     sr = int(mixed_r * 24000)
                     all_samples.append(max(-32768, min(32767, sl)))
                     all_samples.append(max(-32768, min(32767, sr)))
                 else:
-                    mixed *= scale * master_volume
+                    mixed *= vol_mult
                     sample_i = int(mixed * 24000)
                     sample_i = max(-32768, min(32767, sample_i))
                     all_samples.append(sample_i)
