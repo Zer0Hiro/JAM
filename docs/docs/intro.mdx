@@ -1,0 +1,81 @@
+---
+sidebar_position: 1
+slug: /intro
+---
+
+# Introduction
+
+JAM is a music notation language that compiles to **Mozzi 2.0 C++ sketches** for ESP32 and Arduino hardware. It also renders WAV previews for browser-based playback — no hardware required.
+
+## What JAM Does
+
+- **Write music as code** — define instruments, sequences, patterns, and arrangements in `.jam` files
+- **Compile to C++** — generates Mozzi sketches ready for PlatformIO upload to ESP32 or Arduino
+- **Preview as WAV** — render audio in-browser without any hardware
+
+:::tip
+You can also use the [web editor](/docs/guides/web-editor) to write and preview JAM programs directly in your browser — no installation needed.
+:::
+
+## Quick Example
+
+```
+BPM 120
+
+INSTRUMENT lead:
+    TYPE SYNTH
+    WAVE SAW
+    ADSR 10 50 200 100
+    VOLUME 180
+
+SEQUENCE melody:
+    PLAY lead C4 0.5
+    PLAY lead E4 0.5
+    PLAY lead G4 1
+    REST 0.5
+    PLAY lead A4 2
+
+PLAY_SEQUENCE melody
+```
+
+## File Structure
+
+A `.jam` file is organized in this order (all sections optional):
+
+1. **Global config** — BPM, audio rate, control rate, key, swing, humanize
+2. **Instruments** — define synths and drums
+3. **Sequences** — note-by-note melodies and bass lines
+4. **Patterns** — beat-grid drum/instrument placement
+5. **Arrangement** — playback order
+
+:::info
+All sections are optional. A minimal `.jam` file only needs one instrument, one sequence, and one arrangement command.
+:::
+
+## Pipeline
+
+```
+.jam source → Lexer → Parser → AST → Semantic Validator → Code Generator → C++
+                                                              ↓
+                                                        WAV Renderer
+```
+
+## CLI Usage
+
+```bash
+# Compile to C++ (stdout)
+python3 -m dsl.compiler examples/melody.jam
+
+# Compile to file
+python3 -m dsl.compiler examples/melody.jam -o src/main.cpp
+
+# WAV preview
+python3 -m dsl.compiler examples/melody.jam --wav -o out.wav
+
+# Validate only
+python3 -m dsl.compiler examples/melody.jam --dry-run --verbose
+```
+
+:::tip
+Use `--dry-run --verbose` during development to catch errors early without generating output files.
+:::
