@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00f0ff"/>
+      <stop offset="50%" style="stop-color:#8b5cf6"/>
+      <stop offset="100%" style="stop-color:#ff00aa"/>
+    </linearGradient>
+  </defs>
+  <rect width="48" height="48" rx="10" fill="#0a0a1a"/>
+  <text x="24" y="33" text-anchor="middle" font-family="system-ui, sans-serif" font-size="20" font-weight="800" fill="url(#logoGrad)">JAM</text>
+  <path d="M8,38 Q14,34 20,38 T32,38 T44,38" fill="none" stroke="#00f0ff" stroke-width="1.5" opacity="0.5"/>
+</svg>
