@@ -186,7 +186,7 @@ class BellSynth:
         a2 = 0.47 * max(0.0, 1.0 - t / self.h2_decay_s) if t < self.h2_decay_s else 0.0
         a3 = 0.23 * max(0.0, 1.0 - t / self.h3_decay_s) if t < self.h3_decay_s else 0.0
         self.sample_idx += 1
-        return s1 * a1 + s2 * a2 + s3 * a3
+        return (s1 * a1 + s2 * a2 + s3 * a3) / 1.7
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +262,9 @@ class ADSREnvelope:
         t_release = t - note_dur_s
         if t_release < self.release_s:
             if self.release_s > 0:
-                return self.sustain_level * (1.0 - t_release / self.release_s)
+                frac = 1.0 - t_release / self.release_s
+                frac = frac * frac
+                return self.sustain_level * frac
             return 0.0
 
         return 0.0
@@ -338,27 +340,30 @@ class WavRenderer:
         self._envelopes: list[ADSREnvelope] = []
         for inst in self._instruments:
             if inst.wave == WaveType.HANDPAN:
-                decay = (inst.adsr.decay_ms if inst.adsr else (inst.decay_ms or 600)) / 1000.0
-                release = (inst.adsr.release_ms if inst.adsr else 200) / 1000.0
-                self._envelopes.append(ADSREnvelope(
-                    attack_s=0.001,
-                    decay_s=decay,
-                    sustain_level=0.0,
-                    release_s=release,
-                    attack_level=1.0,
-                    decay_level=0.8,
-                ))
+                if inst.adsr:
+                    self._envelopes.append(ADSREnvelope.from_params(inst.adsr))
+                else:
+                    decay = (inst.decay_ms or 600) / 1000.0
+                    self._envelopes.append(ADSREnvelope(
+                        attack_s=0.001,
+                        decay_s=decay,
+                        sustain_level=0.0,
+                        release_s=max(0.2, decay * 0.5),
+                        attack_level=1.0,
+                        decay_level=0.8,
+                    ))
             elif inst.wave == WaveType.BELL:
-                decay = (inst.adsr.decay_ms if inst.adsr else 400) / 1000.0
-                release = (inst.adsr.release_ms if inst.adsr else 600) / 1000.0
-                self._envelopes.append(ADSREnvelope(
-                    attack_s=0.001,
-                    decay_s=decay,
-                    sustain_level=0.0,
-                    release_s=release,
-                    attack_level=1.0,
-                    decay_level=0.8,
-                ))
+                if inst.adsr:
+                    self._envelopes.append(ADSREnvelope.from_params(inst.adsr))
+                else:
+                    self._envelopes.append(ADSREnvelope(
+                        attack_s=0.001,
+                        decay_s=0.4,
+                        sustain_level=0.0,
+                        release_s=0.6,
+                        attack_level=1.0,
+                        decay_level=0.8,
+                    ))
             elif inst.adsr:
                 self._envelopes.append(ADSREnvelope.from_params(inst.adsr))
             elif inst.kind == InstrumentKind.DRUM:
@@ -825,7 +830,7 @@ class WavRenderer:
                 delay_positions[di] = 0
 
         # Reverb buffers per instrument (multi-tap comb filter)
-        _REVERB_TAPS_MS = [30, 50, 80, 113]
+        _REVERB_TAPS_MS = [53, 79, 107, 139]
         reverb_bufs: dict[int, list[list[float]]] = {}
         reverb_positions: dict[int, list[int]] = {}
         reverb_feedback: dict[int, float] = {}
@@ -1246,9 +1251,10 @@ class WavRenderer:
                             tap_pos = reverb_positions[idx][tap_i]
                             rev_sum += tap_buf[tap_pos]
                             fb = reverb_feedback.get(idx, 0.4)
-                            tap_buf[tap_pos] = sample_val * 0.3 + tap_buf[tap_pos] * fb
+                            tap_buf[tap_pos] = sample_val * 0.15 + tap_buf[tap_pos] * fb
                             reverb_positions[idx][tap_i] = (tap_pos + 1) % len(tap_buf)
-                        sample_val = sample_val * (1.0 - rev_mix) + rev_sum * rev_mix / len(reverb_bufs[idx])
+                        rev_out = rev_sum / len(reverb_bufs[idx])
+                        sample_val = sample_val * (1.0 - rev_mix) + rev_out * rev_mix
 
                     # Chorus effect (short modulated delay)
                     if idx in chorus_bufs and inst.chorus > 0:
@@ -1337,7 +1343,7 @@ class WavRenderer:
                     all_samples.append(sample_i)
 
             # Update sustained notes: advance elapsed, remove finished, add new
-            # For non-legato instruments, cut old sustained notes when new note starts
+            # For non-legato instruments, shorten remaining notes to trigger release
             active_inst_ids = set()
             for ev, idx in active_members:
                 if not self._instruments[idx].legato:
@@ -1345,8 +1351,10 @@ class WavRenderer:
             new_sustained = []
             for sn in sustained:
                 sn[3] += advance_s
+                if sn[1] in active_inst_ids and sn[3] < sn[2]:
+                    sn[2] = sn[3]
                 total_note_s = sn[2] + self._envelopes[sn[1]].release_s
-                if sn[3] < total_note_s and sn[1] not in active_inst_ids:
+                if sn[3] < total_note_s:
                     new_sustained.append(sn)
             for m_idx, (ev, idx) in enumerate(active_members):
                 total_with_release = ev.duration_s + self._envelopes[idx].release_s
