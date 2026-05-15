@@ -74,7 +74,7 @@ INSTRUMENT kick:
 | Property | Required | Values | Description |
 |----------|----------|--------|-------------|
 | `TYPE` | yes | `SYNTH`, `DRUM` | Melodic synth or drum hit |
-| `WAVE` | yes | `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `PLUCK` | Oscillator waveform |
+| `WAVE` | yes | `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `PLUCK`, `HANDPAN` | Oscillator waveform |
 | `ADSR` | no | `attack decay sustain release` (all in ms) | Envelope shape (SYNTH only) |
 | `VOLUME` | no | `0`–`255` (default: `200`) | Channel volume |
 | `FREQ` | no | integer Hz | Fixed frequency (DRUM only) |
@@ -85,7 +85,7 @@ INSTRUMENT kick:
 | `DELAY` | no | `time_ms feedback` (0–2000, 0–255) | Echo delay time and feedback |
 | `GLIDE` | no | `0`–`1000` ms (default: `0`) | Portamento / pitch slide time |
 | `PAN` | no | `0`–`255` (default: `127`) | Stereo pan (0=left, 127=center, 255=right) |
-| `LFO` | no | `rate depth VOLUME\|PITCH` | Low Frequency Oscillator (see [LFO](#lfo)) |
+| `LFO` | no | `rate depth VOLUME\|PITCH\|CUTOFF\|PAN` | Low Frequency Oscillator (see [LFO](#lfo)) |
 | `VOICES` | no | `1`–`4` (default: `1`) | Number of detuned oscillator voices (unison) |
 | `DETUNE` | no | `0`–`100` cents (default: `0`) | Detune spread between voices |
 | `CHORUS` | no | `0`–`255` (default: `0`) | Chorus effect wet/dry mix |
@@ -100,19 +100,22 @@ INSTRUMENT kick:
 | `TRIANGLE` | Triangle — softer than square, mellow |
 | `NOISE` | White noise — percussion, hi-hats, snares |
 | `PLUCK` | Karplus-Strong string — guitar, harp, pizzicato |
+| `HANDPAN` | Struck metal membrane — additive synthesis (fundamental + octave + octave-fifth + noise transient). SYNTH only. Attack always 1ms, sustain always 0. Default envelope: ADSR 1 600 0 200. Use DECAY to control ring time. |
 
 ### LFO
 
-LFO (Low Frequency Oscillator) adds slow modulation to volume or pitch. You can apply one LFO to VOLUME and one to PITCH on the same instrument.
+LFO (Low Frequency Oscillator) adds slow modulation to an instrument parameter. Each instrument can have one LFO per target — up to four simultaneous LFOs (VOLUME + PITCH + CUTOFF + PAN).
 
 ```
 INSTRUMENT wobble_bass:
     TYPE SYNTH
     WAVE SAW
+    CUTOFF 2000
     ADSR 5 40 300 120
     VOLUME 200
     LFO 4.0 120 VOLUME     # 4 Hz tremolo, depth 120
     LFO 2.0 30 PITCH       # 2 Hz vibrato, depth 30 cents
+    LFO 1.5 800 CUTOFF     # filter sweep ±800 Hz at 1.5 Hz
 ```
 
 #### LFO syntax
@@ -125,10 +128,12 @@ LFO <rate> <depth> <target>
 |-----------|-------|-------------|
 | `rate` | 0.1–20.0 Hz | Oscillation speed (>10 Hz approaches audio range) |
 | `depth` | 0–255 | Modulation intensity |
-| `target` | `VOLUME` or `PITCH` | What the LFO modulates |
+| `target` | `VOLUME`, `PITCH`, `CUTOFF`, or `PAN` | What the LFO modulates |
 
 - **VOLUME LFO** — creates tremolo effect. Depth controls amplitude swing (255 = full 0-to-max)
 - **PITCH LFO** — creates vibrato effect. Depth is in cents (100 cents = 1 semitone)
+- **CUTOFF LFO** — sweeps the low-pass filter up and down ("wah-wah" / acid bass). Depth is in Hz. Instrument must have `CUTOFF` set
+- **PAN LFO** — auto-pans the instrument across the stereo field. Depth is the swing range (0–255). Instrument must have `PAN` set. **ESP32 with I2S DAC only** — will not compile on AVR
 
 ### Unison / Detune / Chorus
 
@@ -193,8 +198,8 @@ SEQUENCE melody:
 ### PLAY syntax
 
 ```
-PLAY <instrument> <note> <duration> [velocity] [REVERB:<value>] [DELAY:<time>:<feedback>]
-PLAY <instrument> [C4 E4 G4] <duration> [velocity] [REVERB:<value>] [DELAY:<time>:<feedback>]
+PLAY <instrument> <note> <duration> [velocity] [CUTOFF:<value>] [REVERB:<value>] [DELAY:<time>:<feedback>]
+PLAY <instrument> [C4 E4 G4] <duration> [velocity] [CUTOFF:<value>] [REVERB:<value>] [DELAY:<time>:<feedback>]
 ```
 
 - **instrument** — must match a defined `INSTRUMENT` name
@@ -202,6 +207,7 @@ PLAY <instrument> [C4 E4 G4] <duration> [velocity] [REVERB:<value>] [DELAY:<time
 - **chord** — bracket notation `[note note note]` for polyphonic playback (min 2 notes)
 - **duration** — float, in beats relative to BPM (e.g. `0.25` = sixteenth note at 4/4)
 - **velocity** — optional, `0`–`255`. Per-note volume scaling. Omit for full instrument volume
+- **CUTOFF:value** — optional per-note filter override (20–20000 Hz). Instrument must have `CUTOFF` set. Reverts after the note ends
 - **REVERB:value** — optional per-note reverb override (0–255), replaces instrument's reverb for this note
 - **DELAY:time:feedback** — optional per-note delay override (time 0–2000ms, feedback 0–255)
 
@@ -213,17 +219,18 @@ PLAY kick 1             # drum hit, 1 beat duration
 
 ### Per-note Effect Overrides
 
-Override an instrument's reverb or delay settings for individual notes:
+Override an instrument's settings for individual notes:
 
 ```
 SEQUENCE melody:
-    PLAY lead C4 1 200 REVERB:200          # extra reverb on this note
-    PLAY lead E4 1                          # normal instrument reverb
+    PLAY lead C4 1 200 CUTOFF:800          # darker filter on this note
+    PLAY lead E4 1                          # normal instrument settings
     PLAY lead G4 1 180 DELAY:500:120       # longer delay on this note
-    PLAY lead C5 1 200 REVERB:180 DELAY:400:100   # both overrides
+    PLAY lead C5 1 200 REVERB:180 DELAY:400:100   # multiple overrides
+    PLAY lead D5 1 180 CUTOFF:3000 REVERB:200      # bright + wet
 ```
 
-Overrides require velocity to be specified first. They only work on instruments that already have the corresponding effect configured (REVERB or DELAY).
+Overrides require velocity to be specified first. `CUTOFF` override only works on instruments that have `CUTOFF` set — the filter reverts to the instrument's base value after the note ends. `REVERB` and `DELAY` overrides similarly require the corresponding effect configured on the instrument.
 
 ### REST syntax
 
@@ -232,6 +239,48 @@ REST <duration>
 ```
 
 Silent pause for the given number of beats.
+
+### VELOCITY_CURVE
+
+Automatically spread velocities across a series of notes — creates crescendo (getting louder) or decrescendo (getting softer) without writing each velocity by hand.
+
+```
+VELOCITY_CURVE CRESCENDO <start_vel> <end_vel> <note_count>
+VELOCITY_CURVE DECRESCENDO <start_vel> <end_vel> <note_count>
+VELOCITY_CURVE OFF
+```
+
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| `start_vel` | 0–255 | Starting velocity |
+| `end_vel` | 0–255 | Ending velocity |
+| `note_count` | 1–128 | How many subsequent PLAY notes the curve spans |
+
+The curve linearly interpolates velocity across the next `note_count` PLAY events. After all notes are consumed, velocity returns to normal (full instrument volume).
+
+```
+SEQUENCE buildup:
+    VELOCITY_CURVE CRESCENDO 40 230 6
+    PLAY lead C4 0.5       # vel ~40
+    PLAY lead D4 0.5       # vel ~78
+    PLAY lead E4 0.5       # vel ~116
+    PLAY lead F4 0.5       # vel ~154
+    PLAY lead G4 0.5       # vel ~192
+    PLAY lead A4 1         # vel ~230
+
+SEQUENCE fadeout:
+    VELOCITY_CURVE DECRESCENDO 200 60 4
+    PLAY lead G4 1         # vel ~200
+    PLAY lead E4 1         # vel ~153
+    PLAY lead C4 1         # vel ~107
+    PLAY lead C3 2         # vel ~60
+```
+
+- VELOCITY_CURVE is **compile-time only** — zero MCU runtime cost. Velocities are baked into the event table
+- A note with an explicit velocity override still uses it, but the curve position advances
+- `VELOCITY_CURVE OFF` cancels an active curve before it finishes
+- REST events do not consume curve positions
+- Multiple VELOCITY_CURVEs in the same sequence: each replaces the previous
 
 ### Chord example
 
@@ -265,8 +314,8 @@ PATTERN basic_beat:
 ### BEAT syntax
 
 ```
-BEAT <position>: <instrument> [note] [duration] [velocity] [REVERB:<value>] [DELAY:<time>:<feedback>]
-BEAT <position>: <instrument> [C4 E4 G4] [duration] [velocity] [REVERB:<value>] [DELAY:<time>:<feedback>]
+BEAT <position>: <instrument> [note] [duration] [velocity] [CUTOFF:<value>] [REVERB:<value>] [DELAY:<time>:<feedback>]
+BEAT <position>: <instrument> [C4 E4 G4] [duration] [velocity] [CUTOFF:<value>] [REVERB:<value>] [DELAY:<time>:<feedback>]
 ```
 
 - **position** — float, 1-based (1 = first beat of bar). Fractional = offbeats (e.g. `1.5`, `2.5`).
@@ -274,7 +323,7 @@ BEAT <position>: <instrument> [C4 E4 G4] [duration] [velocity] [REVERB:<value>] 
 - **note** — optional pitch for synth instruments in patterns
 - **duration** — optional, in beats
 - **velocity** — optional, `0`–`255`. Per-hit volume scaling
-- **REVERB:value** / **DELAY:time:feedback** — optional per-note effect overrides (same as PLAY)
+- **CUTOFF:value** / **REVERB:value** / **DELAY:time:feedback** — optional per-note effect overrides (same as PLAY)
 - Default bar length: 4 beats (4/4 time)
 
 ### Simultaneous playback in patterns
@@ -748,6 +797,9 @@ The compiler runs semantic analysis after parsing and reports errors and warning
 | Per-note REVERB out of range | REVERB override not 0–255 |
 | Per-note DELAY time out of range | DELAY time override not 0–2000 |
 | Per-note DELAY feedback out of range | DELAY feedback override not 0–255 |
+| Per-note CUTOFF out of range | CUTOFF override not 20–20000 |
+| VELOCITY_CURVE velocity out of range | Start or end velocity not 0–255 |
+| VELOCITY_CURVE note_count out of range | Note count not 1–128 |
 
 ### Warnings (compilation continues)
 
@@ -764,7 +816,14 @@ The compiler runs semantic analysis after parsing and reports errors and warning
 | GLIDE > 1000 | Very long glide may sound unnatural |
 | GLIDE on PLUCK | Portamento doesn't apply well to plucked strings |
 | LFO rate > 10 | LFO rate approaches audio range |
+| LFO VOLUME on DRUM | Volume LFO on drum has limited effect |
 | LFO PITCH on DRUM | Pitch LFO has no effect on drums |
+| LFO CUTOFF on DRUM | Cutoff LFO on drum has limited effect |
+| LFO PAN on DRUM | Pan LFO on drum has limited effect |
+| LFO PAN (AVR target) | LFO PAN requires ESP32 with I2S DAC — won't compile on AVR |
+| Per-note CUTOFF without instrument CUTOFF | Override has no effect if instrument lacks CUTOFF |
+| VELOCITY_CURVE extends beyond sequence | Note count exceeds remaining PLAY events in sequence |
+| >2 CUTOFF LFOs (AVR) | Multiple filter LFOs may exceed AVR RAM budget |
 | VOICES > 2 | Uses significant RAM on AVR targets |
 | VOICES on DRUM | Unison voices have no effect on drums |
 | DETUNE > 50 | Large detune may sound out of tune |
@@ -786,7 +845,7 @@ config         := ("BPM" | "AUDIO_RATE" | "CONTROL_RATE") NUMBER
 
 instrument     := "INSTRUMENT" IDENT ":"
                       ("TYPE" ("SYNTH" | "DRUM")
-                     | "WAVE" ("SIN" | "SAW" | "SQUARE" | "TRIANGLE" | "NOISE" | "PLUCK")
+                     | "WAVE" ("SIN" | "SAW" | "SQUARE" | "TRIANGLE" | "NOISE" | "PLUCK" | "HANDPAN")
                      | "ADSR" NUMBER NUMBER NUMBER NUMBER
                      | "VOLUME" NUMBER
                      | "FREQ" NUMBER
@@ -797,7 +856,7 @@ instrument     := "INSTRUMENT" IDENT ":"
                      | "DELAY" NUMBER NUMBER
                      | "GLIDE" NUMBER
                      | "PAN" NUMBER
-                     | "LFO" NUMBER NUMBER ("VOLUME" | "PITCH")
+                     | "LFO" NUMBER NUMBER ("VOLUME" | "PITCH" | "CUTOFF" | "PAN")
                      | "VOICES" NUMBER
                      | "DETUNE" NUMBER
                      | "CHORUS" NUMBER)+
@@ -805,9 +864,14 @@ instrument     := "INSTRUMENT" IDENT ":"
 sequence       := "SEQUENCE" IDENT ":"
                       ("PLAY" IDENT NOTE NUMBER [NUMBER] [fx_override]*
                      | "PLAY" IDENT "[" NOTE+ "]" NUMBER [NUMBER] [fx_override]*
-                     | "REST" NUMBER)+
+                     | "REST" NUMBER
+                     | velocity_curve)+
 
-fx_override    := "REVERB" ":" NUMBER
+velocity_curve := "VELOCITY_CURVE" ("CRESCENDO" | "DECRESCENDO") NUMBER NUMBER NUMBER
+                | "VELOCITY_CURVE" "OFF"
+
+fx_override    := "CUTOFF" ":" NUMBER
+                | "REVERB" ":" NUMBER
                 | "DELAY" ":" NUMBER ":" NUMBER
 
 pattern        := "PATTERN" IDENT ":"
@@ -827,7 +891,7 @@ play_together  := "PLAY_TOGETHER" ":" INDENT arrangement DEDENT
 
 All keywords must be UPPERCASE:
 
-`BPM`, `AUDIO_RATE`, `CONTROL_RATE`, `KEY`, `SWING`, `HUMANIZE`, `MAJOR`, `MINOR`, `DORIAN`, `PHRYGIAN`, `LYDIAN`, `MIXOLYDIAN`, `PENTATONIC`, `BLUES`, `INSTRUMENT`, `TYPE`, `SYNTH`, `DRUM`, `WAVE`, `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `PLUCK`, `ADSR`, `VOLUME`, `FREQ`, `DECAY`, `CUTOFF`, `RESONANCE`, `REVERB`, `DELAY`, `GLIDE`, `PAN`, `LFO`, `PITCH`, `VOICES`, `DETUNE`, `CHORUS`, `SEQUENCE`, `PATTERN`, `PLAY`, `REST`, `BEAT`, `LOOP`, `PLAY_SEQUENCE`, `PLAY_PATTERN`, `PLAY_TOGETHER`, `FADE_IN`, `FADE_OUT`
+`BPM`, `AUDIO_RATE`, `CONTROL_RATE`, `KEY`, `SWING`, `HUMANIZE`, `MAJOR`, `MINOR`, `DORIAN`, `PHRYGIAN`, `LYDIAN`, `MIXOLYDIAN`, `PENTATONIC`, `BLUES`, `INSTRUMENT`, `TYPE`, `SYNTH`, `DRUM`, `WAVE`, `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `PLUCK`, `HANDPAN`, `ADSR`, `VOLUME`, `FREQ`, `DECAY`, `CUTOFF`, `RESONANCE`, `REVERB`, `DELAY`, `GLIDE`, `PAN`, `LFO`, `PITCH`, `VOICES`, `DETUNE`, `CHORUS`, `SEQUENCE`, `PATTERN`, `PLAY`, `REST`, `BEAT`, `LOOP`, `PLAY_SEQUENCE`, `PLAY_PATTERN`, `PLAY_TOGETHER`, `FADE_IN`, `FADE_OUT`, `VELOCITY_CURVE`, `CRESCENDO`, `DECRESCENDO`, `OFF`
 
 ### Identifiers
 
@@ -845,9 +909,11 @@ Integers or floats: `120`, `0.5`, `16384`.
 
 ## Hardware Targets
 
-| Board | Platform | Audio Output |
-|-------|----------|-------------|
-| ESP32 (esp32dev) | pioarduino | Internal DAC (GPIO 25) or configurable PWM pin |
-| Arduino Uno | ATmega328P | PWM output on pin 9 |
+| Board | Platform | Audio Output | Stereo |
+|-------|----------|-------------|--------|
+| ESP32 (esp32dev) | pioarduino | Internal DAC (GPIO 25) or I2S DAC | Yes (I2S DAC) |
+| Arduino Uno | ATmega328P | PWM output on pin 9 | No (mono only) |
 
 Configuration is in `platformio.ini`. ESP32 is the primary target.
+
+**Stereo features** (`PAN`, `LFO PAN`) require ESP32 with an I2S DAC. When any instrument uses `LFO PAN`, the compiler emits `MOZZI_STEREO` and `MOZZI_OUTPUT_I2S_DAC` config macros and guards with `#ifdef __AVR__ #error`.

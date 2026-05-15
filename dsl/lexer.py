@@ -59,7 +59,7 @@ KEYWORDS: set[str] = {
     # Instrument-kind keywords used as values
     "SYNTH", "DRUM",
     # Waveform keywords used as values
-    "SIN", "SAW", "SQUARE", "TRIANGLE", "NOISE", "PLUCK",
+    "SIN", "SAW", "SQUARE", "TRIANGLE", "NOISE", "PLUCK", "HANDPAN",
     # Timing / feel
     "SWING", "HUMANIZE",
     # Key / scale
@@ -71,6 +71,8 @@ KEYWORDS: set[str] = {
     "LFO", "PITCH",
     # Unison / chorus
     "VOICES", "DETUNE", "CHORUS",
+    # Velocity curves
+    "VELOCITY_CURVE", "CRESCENDO", "DECRESCENDO", "OFF",
 }
 
 # Regex matching a scientific pitch note (C4, D#3, Bb2, Fs5 ...)

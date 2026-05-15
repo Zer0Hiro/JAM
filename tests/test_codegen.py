@@ -145,8 +145,9 @@ class TestGenerateMultiChannel:
 
     def test_channel_dispatch(self) -> None:
         code = generate(parse(MULTI_CHANNEL_SOURCE))
-        assert "ev.channel == 0" in code
-        assert "ev.channel == 1" in code
+        # Channel dispatch uses 'ch == N' inside triggerNoteOn/Off helpers
+        assert "ch == 0" in code
+        assert "ch == 1" in code
 
     def test_clipping_prevention(self) -> None:
         code = generate(parse(MULTI_CHANNEL_SOURCE))

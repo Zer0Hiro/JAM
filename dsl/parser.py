@@ -48,6 +48,7 @@ from .ast_nodes import (
     RestEvent,
     ScaleType,
     Sequence,
+    VelocityCurve,
     VolumeChange,
     WaveType,
 )
@@ -248,6 +249,7 @@ class Parser:
         "TRIANGLE": WaveType.TRIANGLE,
         "NOISE": WaveType.NOISE,
         "PLUCK": WaveType.PLUCK,
+        "HANDPAN": WaveType.HANDPAN,
     }
 
     _SCALE_MAP: dict[str, ScaleType] = {
@@ -350,8 +352,12 @@ class Parser:
                     inst.lfo_volume = LfoParams(rate=rate, depth=depth)
                 elif target_tok.value == "PITCH":
                     inst.lfo_pitch = LfoParams(rate=rate, depth=depth)
+                elif target_tok.value == "CUTOFF":
+                    inst.lfo_cutoff = LfoParams(rate=rate, depth=depth)
+                elif target_tok.value == "PAN":
+                    inst.lfo_pan = LfoParams(rate=rate, depth=depth)
                 else:
-                    raise ParseError(f"LFO target must be VOLUME or PITCH, got {target_tok.value!r}", target_tok)
+                    raise ParseError(f"LFO target must be VOLUME, PITCH, CUTOFF, or PAN, got {target_tok.value!r}", target_tok)
             elif kw.value == "VOICES":
                 self._advance()
                 inst.voices = int(self._expect(TokenType.NUMBER).value)
@@ -423,7 +429,8 @@ class Parser:
                 reverb_ov = None
                 delay_time_ov = None
                 delay_fb_ov = None
-                while self._peek_type() == TokenType.KEYWORD and self._peek_value() in ("REVERB", "DELAY"):
+                cutoff_ov = None
+                while self._peek_type() == TokenType.KEYWORD and self._peek_value() in ("REVERB", "DELAY", "CUTOFF"):
                     fx_kw = self._advance()
                     self._expect(TokenType.COLON)
                     if fx_kw.value == "REVERB":
@@ -432,6 +439,8 @@ class Parser:
                         delay_time_ov = int(self._expect(TokenType.NUMBER).value)
                         self._expect(TokenType.COLON)
                         delay_fb_ov = int(self._expect(TokenType.NUMBER).value)
+                    elif fx_kw.value == "CUTOFF":
+                        cutoff_ov = int(self._expect(TokenType.NUMBER).value)
                 seq.events.append(PlayNote(
                     instrument=inst_tok.value,
                     note=note,
@@ -441,8 +450,32 @@ class Parser:
                     reverb_override=reverb_ov,
                     delay_time_override=delay_time_ov,
                     delay_feedback_override=delay_fb_ov,
+                    cutoff_override=cutoff_ov,
                     line=line,
                 ))
+                self._expect(TokenType.NEWLINE)
+
+            elif kw.type == TokenType.KEYWORD and kw.value == "VELOCITY_CURVE":
+                self._advance()
+                kind_tok = self._expect(TokenType.KEYWORD)
+                if kind_tok.value == "OFF":
+                    seq.events.append(VelocityCurve(kind="OFF", line=kind_tok.line))
+                elif kind_tok.value in ("CRESCENDO", "DECRESCENDO"):
+                    start_vel = int(self._expect(TokenType.NUMBER).value)
+                    end_vel = int(self._expect(TokenType.NUMBER).value)
+                    note_count = int(self._expect(TokenType.NUMBER).value)
+                    seq.events.append(VelocityCurve(
+                        kind=kind_tok.value,
+                        start_vel=start_vel,
+                        end_vel=end_vel,
+                        note_count=note_count,
+                        line=kind_tok.line,
+                    ))
+                else:
+                    raise ParseError(
+                        f"VELOCITY_CURVE type must be CRESCENDO, DECRESCENDO, or OFF, got {kind_tok.value!r}",
+                        kind_tok,
+                    )
                 self._expect(TokenType.NEWLINE)
 
             elif kw.type == TokenType.KEYWORD and kw.value == "REST":
@@ -517,7 +550,8 @@ class Parser:
                 reverb_ov = None
                 delay_time_ov = None
                 delay_fb_ov = None
-                while self._peek_type() == TokenType.KEYWORD and self._peek_value() in ("REVERB", "DELAY"):
+                cutoff_ov = None
+                while self._peek_type() == TokenType.KEYWORD and self._peek_value() in ("REVERB", "DELAY", "CUTOFF"):
                     fx_kw = self._advance()
                     self._expect(TokenType.COLON)
                     if fx_kw.value == "REVERB":
@@ -526,6 +560,8 @@ class Parser:
                         delay_time_ov = int(self._expect(TokenType.NUMBER).value)
                         self._expect(TokenType.COLON)
                         delay_fb_ov = int(self._expect(TokenType.NUMBER).value)
+                    elif fx_kw.value == "CUTOFF":
+                        cutoff_ov = int(self._expect(TokenType.NUMBER).value)
 
                 pat.events.append(BeatEvent(
                     beat_position=pos,
@@ -537,6 +573,7 @@ class Parser:
                     reverb_override=reverb_ov,
                     delay_time_override=delay_time_ov,
                     delay_feedback_override=delay_fb_ov,
+                    cutoff_override=cutoff_ov,
                     line=kw.line,
                 ))
                 self._expect(TokenType.NEWLINE)

@@ -24,6 +24,7 @@ class WaveType(Enum):
     TRIANGLE = auto()
     NOISE = auto()
     PLUCK = auto()
+    HANDPAN = auto()
 
 
 class ScaleType(Enum):
@@ -127,6 +128,8 @@ class InstrumentDef:
     pan: int = 127
     lfo_volume: Optional[LfoParams] = None
     lfo_pitch: Optional[LfoParams] = None
+    lfo_cutoff: Optional[LfoParams] = None
+    lfo_pan: Optional[LfoParams] = None
     voices: int = 1
     detune: int = 0
     chorus: int = 0
@@ -155,6 +158,7 @@ class PlayNote:
     reverb_override: Optional[int] = None
     delay_time_override: Optional[int] = None
     delay_feedback_override: Optional[int] = None
+    cutoff_override: Optional[int] = None
     line: int = 0
 
 
@@ -191,6 +195,25 @@ class BeatEvent:
     reverb_override: Optional[int] = None
     delay_time_override: Optional[int] = None
     delay_feedback_override: Optional[int] = None
+    cutoff_override: Optional[int] = None
+    line: int = 0
+
+
+@dataclass
+class VelocityCurve:
+    """A VELOCITY_CURVE statement inside a SEQUENCE.
+
+    Attributes:
+        kind: "CRESCENDO", "DECRESCENDO", or "OFF".
+        start_vel: Starting velocity (0-255).
+        end_vel: Ending velocity (0-255).
+        note_count: Number of PLAY events the curve spans (1-128).
+        line: Source line number.
+    """
+    kind: str = "OFF"
+    start_vel: int = 0
+    end_vel: int = 0
+    note_count: int = 0
     line: int = 0
 
 
@@ -207,7 +230,7 @@ class Sequence:
         events: Ordered list of PlayNote / RestEvent.
     """
     name: str
-    events: list[PlayNote | RestEvent] = field(default_factory=list)
+    events: list[PlayNote | RestEvent | VelocityCurve] = field(default_factory=list)
 
 
 @dataclass

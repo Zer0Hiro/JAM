@@ -26,7 +26,9 @@ from .ast_nodes import (
     PlaySequenceRef,
     PlayTogetherBlock,
     Program,
+    RestEvent,
     SCALE_INTERVALS,
+    VelocityCurve,
     VolumeChange,
     WaveType,
 )
@@ -156,6 +158,12 @@ def validate(program: Program) -> ValidationResult:
             result.warn(f"Instrument '{name}': GLIDE has no effect on PLUCK synthesis")
         if inst.wave == WaveType.PLUCK and inst.adsr and inst.adsr.sustain_ms > 0:
             result.warn(f"Instrument '{name}': ADSR sustain ignored for PLUCK")
+        if inst.wave == WaveType.HANDPAN and inst.kind == InstrumentKind.DRUM:
+            result.error(f"Instrument '{name}': HANDPAN waveform only valid for SYNTH")
+        if inst.wave == WaveType.HANDPAN and inst.glide_ms > 0:
+            result.warn(f"Instrument '{name}': GLIDE has no effect on HANDPAN synthesis")
+        if inst.wave == WaveType.HANDPAN and inst.adsr and inst.adsr.sustain_ms > 0:
+            result.warn(f"Instrument '{name}': ADSR sustain ignored for HANDPAN (always 0)")
         # LFO validation
         for lfo, target_name in [(inst.lfo_volume, "VOLUME"), (inst.lfo_pitch, "PITCH")]:
             if lfo is not None:
@@ -167,6 +175,29 @@ def validate(program: Program) -> ValidationResult:
                     result.warn(f"Instrument '{name}': LFO rate {lfo.rate} Hz above 10 Hz approaches audio range")
         if inst.lfo_pitch is not None and inst.kind == InstrumentKind.DRUM:
             result.warn(f"Instrument '{name}': LFO pitch has no effect on drums")
+        # LFO CUTOFF validation
+        if inst.lfo_cutoff is not None:
+            lfo = inst.lfo_cutoff
+            if lfo.rate < 0.1 or lfo.rate > 20.0:
+                result.error(f"Instrument '{name}': LFO CUTOFF rate must be 0.1-20.0 Hz")
+            if lfo.depth < 0 or lfo.depth > 255:
+                result.error(f"Instrument '{name}': LFO CUTOFF depth must be 0-255")
+            if lfo.rate > 10.0:
+                result.warn(f"Instrument '{name}': LFO CUTOFF rate {lfo.rate} Hz approaches audio range")
+            if inst.kind == InstrumentKind.DRUM:
+                result.warn(f"Instrument '{name}': LFO CUTOFF on DRUM has no effect")
+        # LFO PAN validation
+        if inst.lfo_pan is not None:
+            lfo = inst.lfo_pan
+            if lfo.rate < 0.1 or lfo.rate > 20.0:
+                result.error(f"Instrument '{name}': LFO PAN rate must be 0.1-20.0 Hz")
+            if lfo.depth < 0 or lfo.depth > 255:
+                result.error(f"Instrument '{name}': LFO PAN depth must be 0-255")
+            if lfo.rate > 10.0:
+                result.warn(f"Instrument '{name}': LFO PAN rate {lfo.rate} Hz approaches audio range")
+            if inst.kind == InstrumentKind.DRUM:
+                result.warn(f"Instrument '{name}': LFO PAN on DRUM has no effect")
+            result.warn(f"Instrument '{name}': LFO PAN requires stereo I2S DAC (ESP32 only)")
         # VOICES / DETUNE / CHORUS validation
         if inst.voices < 1 or inst.voices > 4:
             result.error(f"Instrument '{name}': VOICES must be 1-4")
@@ -187,6 +218,15 @@ def validate(program: Program) -> ValidationResult:
         result.warn(
             f"{synth_count} synth instruments defined — ATmega328 has only 2KB RAM; "
             f"consider using {_MAX_RECOMMENDED_SYNTHS} or fewer"
+        )
+
+    lfo_cutoff_count = sum(
+        1 for inst in program.instruments.values() if inst.lfo_cutoff is not None
+    )
+    if lfo_cutoff_count > 2:
+        result.warn(
+            f"More than 2 CUTOFF LFOs may exhaust AVR RAM "
+            f"({lfo_cutoff_count} instruments use LFO CUTOFF)"
         )
 
     # --- Check sequences ---
@@ -249,6 +289,57 @@ def validate(program: Program) -> ValidationResult:
                     result.error(f"Sequence '{seq_name}': DELAY time override {ev.delay_time_override} out of range 0-2000", ev.line)
                 if ev.delay_feedback_override is not None and (ev.delay_feedback_override < 0 or ev.delay_feedback_override > 255):
                     result.error(f"Sequence '{seq_name}': DELAY feedback override {ev.delay_feedback_override} out of range 0-255", ev.line)
+                if ev.cutoff_override is not None:
+                    if ev.cutoff_override < 20 or ev.cutoff_override > 20000:
+                        result.error(
+                            f"Sequence '{seq_name}': per-note CUTOFF {ev.cutoff_override} out of range 20-20000 Hz",
+                            ev.line,
+                        )
+                    inst = program.instruments.get(ev.instrument)
+                    if inst is not None and inst.cutoff is None:
+                        result.warn(
+                            f"Sequence '{seq_name}': per-note CUTOFF on instrument '{ev.instrument}' "
+                            "without CUTOFF configured has no effect",
+                            ev.line,
+                        )
+
+    # --- Check sequences for VelocityCurve ---
+    for seq_name, seq in program.sequences.items():
+        remaining_plays = sum(1 for ev in seq.events if isinstance(ev, PlayNote))
+        play_idx = 0
+        for ev in seq.events:
+            if isinstance(ev, VelocityCurve):
+                if ev.kind not in ("CRESCENDO", "DECRESCENDO", "OFF"):
+                    result.error(
+                        f"Sequence '{seq_name}': unknown VELOCITY_CURVE type '{ev.kind}'",
+                        ev.line,
+                    )
+                if ev.kind != "OFF":
+                    if ev.start_vel < 0 or ev.start_vel > 255:
+                        result.error(
+                            f"Sequence '{seq_name}': VELOCITY_CURVE start_vel {ev.start_vel} out of range 0-255",
+                            ev.line,
+                        )
+                    if ev.end_vel < 0 or ev.end_vel > 255:
+                        result.error(
+                            f"Sequence '{seq_name}': VELOCITY_CURVE end_vel {ev.end_vel} out of range 0-255",
+                            ev.line,
+                        )
+                    if ev.note_count < 1 or ev.note_count > 128:
+                        result.error(
+                            f"Sequence '{seq_name}': VELOCITY_CURVE note_count {ev.note_count} out of range 1-128",
+                            ev.line,
+                        )
+                    plays_after = sum(
+                        1 for e in seq.events[seq.events.index(ev) + 1:]
+                        if isinstance(e, PlayNote)
+                    )
+                    if ev.note_count > plays_after:
+                        result.warn(
+                            f"Sequence '{seq_name}': VELOCITY_CURVE extends beyond end of sequence "
+                            f"(note_count={ev.note_count}, remaining PLAYs={plays_after})",
+                            ev.line,
+                        )
 
     # --- Check patterns ---
     for pat_name, pat in program.patterns.items():
@@ -323,6 +414,19 @@ def validate(program: Program) -> ValidationResult:
                 result.error(f"Pattern '{pat_name}': DELAY time override {ev.delay_time_override} out of range 0-2000", ev.line)
             if ev.delay_feedback_override is not None and (ev.delay_feedback_override < 0 or ev.delay_feedback_override > 255):
                 result.error(f"Pattern '{pat_name}': DELAY feedback override {ev.delay_feedback_override} out of range 0-255", ev.line)
+            if ev.cutoff_override is not None:
+                if ev.cutoff_override < 20 or ev.cutoff_override > 20000:
+                    result.error(
+                        f"Pattern '{pat_name}': per-note CUTOFF {ev.cutoff_override} out of range 20-20000 Hz",
+                        ev.line,
+                    )
+                inst_p = program.instruments.get(ev.instrument)
+                if inst_p is not None and inst_p.cutoff is None:
+                    result.warn(
+                        f"Pattern '{pat_name}': per-note CUTOFF on instrument '{ev.instrument}' "
+                        "without CUTOFF configured has no effect",
+                        ev.line,
+                    )
 
     # --- Check arrangement references ---
     _check_arrangement(program.arrangement, seq_names, pat_names, result)
@@ -352,7 +456,53 @@ def validate(program: Program) -> ValidationResult:
     if program.config.key_root and program.config.key_scale:
         _check_key_notes(program, result)
 
+    # --- AVR RAM budget estimate ---
+    _check_avr_ram(program, result)
+
     return result
+
+
+def _check_avr_ram(program: Program, result: ValidationResult) -> None:
+    """Estimate generated sketch RAM usage and error if it exceeds AVR budget."""
+    insts = list(program.instruments.values())
+    n = len(insts)
+
+    # Fixed overhead: sequencer state, button/pot vars, stack headroom
+    ram = 150
+    # Per-channel: Oscil(4) + ADSR(16) + channelActive(1) + channelVelocity(1) + channelNoteOff(4)
+    ram += n * 26
+    # HANDPAN extra oscillators: 3 extra Oscil(4) + noteOnTime(4) + decayMs(2) = 18 bytes each
+    ram += sum(18 for inst in insts if inst.wave == WaveType.HANDPAN)
+    # StateVariable filter: ~8 bytes each (for channels with cutoff)
+    ram += sum(8 for inst in insts if inst.cutoff is not None)
+    # LFO CUTOFF phase counter: 2 bytes each
+    ram += sum(2 for inst in insts if inst.lfo_cutoff is not None)
+    # LFO PAN phase counter + curPan: 3 bytes each
+    ram += sum(3 for inst in insts if inst.lfo_pan is not None)
+    # cutoffOvrActive flags: 1 byte per channel with cutoff
+    ram += sum(1 for inst in insts if inst.cutoff is not None)
+    # Delay buffers: delay_time_ms * audio_rate / 1000 bytes
+    audio_rate = program.config.audio_rate
+    ram += sum(
+        max(1, inst.delay_time_ms * audio_rate // 1000)
+        for inst in insts if inst.delay_time_ms > 0
+    )
+    # Drum pitch sweep arrays: 2 * uint16_t per tonal drum
+    ram += sum(
+        4 for inst in insts
+        if inst.kind.name == "DRUM" and inst.wave.name != "NOISE"
+    )
+    # Glide arrays: 3 * uint16_t per glide instrument
+    ram += sum(6 for inst in insts if inst.glide_ms > 0)
+    # Stereo pan array: 1 byte per channel when stereo
+    if any(inst.pan != 127 or inst.lfo_pan is not None for inst in insts):
+        ram += n
+
+    if ram > 1600:
+        result.warn(
+            f"Sketch may exceed Arduino Uno RAM (~{ram} bytes estimated, limit 1600). "
+            "ESP32 has plenty of RAM -- this warning only matters for AVR targets."
+        )
 
 
 _NOTE_BASES: dict[str, int] = {

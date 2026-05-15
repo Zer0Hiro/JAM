@@ -46,6 +46,7 @@ from .ast_nodes import (
     Program,
     RestEvent,
     Sequence,
+    VelocityCurve,
     VolumeChange,
     WaveType,
 )
@@ -123,6 +124,7 @@ class FlatEvent:
     new_bpm: int = 0
     is_volume_change: bool = False
     new_volume: int = 0
+    cutoff_override: int = 0  # 0 = no override; non-zero = Hz value for this note
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +163,11 @@ class CodeGenerator:
         # Collect which wavetable types are needed
         self._needed_waves: set[WaveType] = set()
         for inst in self._instruments:
-            self._needed_waves.add(inst.wave)
+            if inst.wave == WaveType.HANDPAN:
+                self._needed_waves.add(WaveType.SIN)
+                self._needed_waves.add(WaveType.NOISE)
+            elif inst.wave != WaveType.PLUCK:
+                self._needed_waves.add(inst.wave)
 
         # Identify drum channels with tonal waves (need pitch sweep)
         self._drum_tonal: list[bool] = [
@@ -169,6 +175,12 @@ class CodeGenerator:
             for inst in self._instruments
         ]
         self._has_drum_tonal = any(self._drum_tonal)
+
+        # Identify HANDPAN channels (additive synthesis: 3 SIN + noise burst)
+        self._is_handpan: list[bool] = [
+            inst.wave == WaveType.HANDPAN for inst in self._instruments
+        ]
+        self._has_handpan = any(self._is_handpan)
 
         # Flatten arrangement into a linear event list
         self._events: list[FlatEvent] = []
@@ -212,6 +224,8 @@ class CodeGenerator:
                     pan=base_inst.pan,
                     lfo_volume=base_inst.lfo_volume,
                     lfo_pitch=base_inst.lfo_pitch,
+                    lfo_cutoff=base_inst.lfo_cutoff,
+                    lfo_pan=base_inst.lfo_pan,
                     voices=base_inst.voices,
                     detune=base_inst.detune,
                     chorus=base_inst.chorus,
@@ -222,10 +236,19 @@ class CodeGenerator:
                 channels.append(new_idx)
             self._voice_channels[inst_name] = channels
 
-        # Check for stereo (any pan != 127)
-        self._is_stereo = any(inst.pan != 127 for inst in self._instruments)
+        # Check for stereo (any pan != 127, or any LFO PAN)
+        self._is_stereo = any(
+            inst.pan != 127 or inst.lfo_pan is not None
+            for inst in self._instruments
+        )
         # Check for filters
         self._has_filter = any(inst.cutoff is not None for inst in self._instruments)
+        # Check for LFO CUTOFF
+        self._has_lfo_cutoff = any(inst.lfo_cutoff is not None for inst in self._instruments)
+        # Check for LFO PAN
+        self._has_lfo_pan = any(inst.lfo_pan is not None for inst in self._instruments)
+        # Check for per-note cutoff override (need cutoff restore machinery)
+        self._has_cutoff_override = self._has_filter  # any filter instrument can receive override
         # Check for delay
         self._has_delay = any(inst.delay_time_ms > 0 for inst in self._instruments)
         # Check for reverb
@@ -279,7 +302,18 @@ class CodeGenerator:
         seq = self.program.sequences.get(name)
         if seq is None:
             return
+
+        # Velocity curve state: None or [start, end, count, pos]
+        active_curve: Optional[list[int]] = None
+
         for ev in seq.events:
+            if isinstance(ev, VelocityCurve):
+                if ev.kind == "OFF":
+                    active_curve = None
+                else:
+                    active_curve = [ev.start_vel, ev.end_vel, ev.note_count, 0]
+                continue
+
             if isinstance(ev, RestEvent):
                 self._events.append(FlatEvent(
                     channel=0,
@@ -287,46 +321,68 @@ class CodeGenerator:
                     duration_ms=self._beats_to_ms(ev.duration_beats),
                     is_rest=True,
                 ))
-            elif isinstance(ev, PlayNote):
-                vel = ev.velocity if ev.velocity is not None else 255
-                if ev.notes:
-                    channels = self._voice_channels.get(
-                        ev.instrument,
-                        [self._inst_index.get(ev.instrument, 0)],
-                    )
-                    for i, note_name in enumerate(ev.notes):
-                        ch = channels[min(i, len(channels) - 1)]
-                        is_last = (i == len(ev.notes) - 1)
-                        self._events.append(FlatEvent(
-                            channel=ch,
-                            freq=note_name_to_freq_int(note_name),
-                            duration_ms=self._beats_to_ms(ev.duration_beats),
-                            is_rest=False,
-                            inst_name=ev.instrument,
-                            note_name=note_name,
-                            simultaneous_with_next=not is_last,
-                            velocity=vel,
-                        ))
-                else:
-                    ch = self._inst_index.get(ev.instrument, 0)
-                    inst = self.program.instruments.get(ev.instrument)
-                    freq = 0
-                    note = ev.note or ""
+                continue
 
-                    if ev.note:
-                        freq = note_name_to_freq_int(ev.note)
-                    elif inst is not None and inst.freq is not None:
-                        freq = inst.freq
+            if not isinstance(ev, PlayNote):
+                continue
 
+            # Resolve velocity: explicit overrides curve; curve advances regardless
+            if ev.velocity is not None:
+                vel = ev.velocity
+            elif active_curve is not None:
+                s, e, n, p = active_curve
+                vel = s + (e - s) * p // max(1, n - 1) if n > 1 else s
+            else:
+                vel = 255
+
+            # Advance curve position (even when explicit velocity was used)
+            if active_curve is not None:
+                active_curve[3] += 1
+                if active_curve[3] >= active_curve[2]:
+                    active_curve = None
+
+            cutoff_ov = ev.cutoff_override or 0
+
+            if ev.notes:
+                channels = self._voice_channels.get(
+                    ev.instrument,
+                    [self._inst_index.get(ev.instrument, 0)],
+                )
+                for i, note_name in enumerate(ev.notes):
+                    ch = channels[min(i, len(channels) - 1)]
+                    is_last = (i == len(ev.notes) - 1)
                     self._events.append(FlatEvent(
                         channel=ch,
-                        freq=freq,
+                        freq=note_name_to_freq_int(note_name),
                         duration_ms=self._beats_to_ms(ev.duration_beats),
                         is_rest=False,
                         inst_name=ev.instrument,
-                        note_name=note,
+                        note_name=note_name,
+                        simultaneous_with_next=not is_last,
                         velocity=vel,
+                        cutoff_override=cutoff_ov if i == 0 else 0,
                     ))
+            else:
+                ch = self._inst_index.get(ev.instrument, 0)
+                inst = self.program.instruments.get(ev.instrument)
+                freq = 0
+                note = ev.note or ""
+
+                if ev.note:
+                    freq = note_name_to_freq_int(ev.note)
+                elif inst is not None and inst.freq is not None:
+                    freq = inst.freq
+
+                self._events.append(FlatEvent(
+                    channel=ch,
+                    freq=freq,
+                    duration_ms=self._beats_to_ms(ev.duration_beats),
+                    is_rest=False,
+                    inst_name=ev.instrument,
+                    note_name=note,
+                    velocity=vel,
+                    cutoff_override=cutoff_ov,
+                ))
 
     def _flatten_pattern(self, name: str) -> None:
         """Flatten a pattern into events, grouping simultaneous beats.
@@ -396,6 +452,7 @@ class CodeGenerator:
                     dur = 80
 
                 vel = bev.velocity if bev.velocity is not None else 255
+                cutoff_ov = bev.cutoff_override or 0
                 is_last = (ev_idx == len(expanded) - 1)
                 self._events.append(FlatEvent(
                     channel=ch,
@@ -406,6 +463,7 @@ class CodeGenerator:
                     note_name=note_name,
                     simultaneous_with_next=not is_last,
                     velocity=vel,
+                    cutoff_override=cutoff_ov,
                 ))
 
             current_beat = next_pos
@@ -513,6 +571,8 @@ class CodeGenerator:
                     inst_name=ev.inst_name,
                     note_name=ev.note_name,
                     simultaneous_with_next=not is_last,
+                    velocity=ev.velocity,
+                    cutoff_override=ev.cutoff_override,
                 ))
 
     # ----- C++ emission ------------------------------------------------------
@@ -549,18 +609,37 @@ class CodeGenerator:
 
     def _emit_config_macros(self) -> str:
         """Emit Mozzi config macros (must come before #include <Mozzi.h>)."""
-        lines = [
+        lines = []
+
+        # LFO PAN requires ESP32 I2S DAC — fail loudly on AVR at C++ compile time
+        if self._has_lfo_pan:
+            lines += [
+                "#ifdef __AVR__",
+                '#error "LFO PAN requires ESP32 with I2S DAC"',
+                "#endif",
+                "",
+            ]
+
+        lines += [
             f"#define MOZZI_AUDIO_RATE {self.config.audio_rate}",
             f"#define MOZZI_CONTROL_RATE {self.config.control_rate}",
         ]
-        if self._is_stereo:
+
+        if self._has_lfo_pan:
+            # Force stereo I2S DAC for LFO PAN regardless of audio_pin setting
+            lines.append("#define MOZZI_AUDIO_CHANNELS MOZZI_STEREO")
+            lines.append("#define MOZZI_OUTPUT_MODE MOZZI_OUTPUT_I2S_DAC")
+        elif self._is_stereo:
             lines.append("#define MOZZI_AUDIO_CHANNELS 2")
-        if self.audio_pin is not None:
+            if self.audio_pin is not None and self.audio_pin in (25, 26):
+                lines.append("#define MOZZI_OUTPUT_MODE MOZZI_OUTPUT_I2S_DAC")
+        elif self.audio_pin is not None:
             if self.audio_pin in (25, 26):
                 lines.append("#define MOZZI_OUTPUT_MODE MOZZI_OUTPUT_I2S_DAC")
             else:
                 lines.append("#define MOZZI_OUTPUT_MODE MOZZI_OUTPUT_PWM")
                 lines.append(f"#define MOZZI_AUDIO_PIN_1 {self.audio_pin}")
+
         lines.append("")
         return "\n".join(lines)
 
@@ -569,10 +648,14 @@ class CodeGenerator:
         lines = ["#include <Mozzi.h>"]
         lines.append("#include <Oscil.h>")
         lines.append("#include <ADSR.h>")
+        if self._has_filter:
+            lines.append("#include <StateVariable.h>")
         lines.append("")
 
         # Wavetable includes
         for wt in sorted(self._needed_waves, key=lambda w: w.name):
+            if wt not in _WAVE_TABLE:
+                continue
             info = _WAVE_TABLE[wt]
             lines.append(f"#include <{info.header}>")
 
@@ -589,11 +672,30 @@ class CodeGenerator:
         ]
 
         for i, inst in enumerate(self._instruments):
-            info = _WAVE_TABLE[inst.wave]
             lines.append(f"// Channel {i}: {inst.name} ({inst.kind.name})")
-            lines.append(
-                f"Oscil<{info.table_size}, MOZZI_AUDIO_RATE> osc{i}({info.data_name});"
-            )
+            if self._is_handpan[i]:
+                sin_info = _WAVE_TABLE[WaveType.SIN]
+                noise_info = _WAVE_TABLE[WaveType.NOISE]
+                lines.append(
+                    f"Oscil<{sin_info.table_size}, MOZZI_AUDIO_RATE> osc{i}({sin_info.data_name});  // fundamental"
+                )
+                lines.append(
+                    f"Oscil<{sin_info.table_size}, MOZZI_AUDIO_RATE> hpOct{i}({sin_info.data_name});  // octave (2f)"
+                )
+                lines.append(
+                    f"Oscil<{sin_info.table_size}, MOZZI_AUDIO_RATE> hpFif{i}({sin_info.data_name});  // octave+fifth (3f)"
+                )
+                lines.append(
+                    f"Oscil<{noise_info.table_size}, MOZZI_AUDIO_RATE> hpNoise{i}({noise_info.data_name});  // transient"
+                )
+                decay_ms = inst.decay_ms if inst.decay_ms else 600
+                lines.append(f"uint32_t hpNoteOnTime{i} = 0;")
+                lines.append(f"const uint16_t hpDecayMs{i} = {decay_ms};")
+            else:
+                info = _WAVE_TABLE[inst.wave]
+                lines.append(
+                    f"Oscil<{info.table_size}, MOZZI_AUDIO_RATE> osc{i}({info.data_name});"
+                )
             lines.append(
                 f"ADSR<MOZZI_CONTROL_RATE, MOZZI_AUDIO_RATE> env{i};"
             )
@@ -626,21 +728,61 @@ class CodeGenerator:
         if self._is_stereo and n > 0:
             pans = ", ".join(str(inst.pan) for inst in self._instruments)
             lines.append("// Per-channel pan (0=left, 127=center, 255=right)")
-            lines.append(f"const uint8_t channelPan[NUM_CHANNELS] = {{{pans}}};")
+            if self._has_lfo_pan:
+                # Mutable pan for LFO-driven channels
+                lines.append(f"uint8_t curPan[NUM_CHANNELS] = {{{pans}}};")
+                lines.append("// LFO PAN phase counters")
+                for i, inst in enumerate(self._instruments):
+                    if inst.lfo_pan is not None:
+                        period = max(1, int(self.config.control_rate / inst.lfo_pan.rate))
+                        lines.append(f"uint16_t lfoPanPhase{i} = 0;")
+                        lines.append(f"#define LFO_PAN_PERIOD_{i} {period}U")
+                        lines.append(f"#define LFO_PAN_DEPTH_{i} {inst.lfo_pan.depth}")
+                        lines.append(f"#define LFO_PAN_BASE_{i} {inst.pan}U")
+            else:
+                lines.append(f"const uint8_t curPan[NUM_CHANNELS] = {{{pans}}};")
             lines.append("")
 
-        # Low-pass filter state
+        # StateVariable filter (one per channel with cutoff configured)
         if self._has_filter and n > 0:
-            lines.append("// Low-pass filter state")
-            lines.append("int16_t lpfState[NUM_CHANNELS];")
-            cutoffs = []
-            resos = []
-            for inst in self._instruments:
-                cutoffs.append(str(inst.cutoff if inst.cutoff is not None else 20000))
-                resos.append(str(inst.resonance))
-            lines.append(f"const uint16_t channelCutoff[NUM_CHANNELS] = {{{', '.join(cutoffs)}}};")
-            lines.append(f"const uint8_t channelReso[NUM_CHANNELS] = {{{', '.join(resos)}}};")
+            lines.append("// StateVariable low-pass filters")
+            lines.append("// hzToQ8n0: convert Hz to Mozzi Q8n0 cutoff (0-255 = 0 to Nyquist)")
+            lines.append("static inline uint8_t hzToQ8n0(uint16_t hz) {")
+            lines.append("    uint32_t q = ((uint32_t)hz * 255U) / (MOZZI_AUDIO_RATE / 2);")
+            lines.append("    return (uint8_t)(q > 255 ? 255 : q);")
+            lines.append("}")
             lines.append("")
+            for i, inst in enumerate(self._instruments):
+                if inst.cutoff is not None:
+                    lines.append(f"StateVariable<LOW_PASS> svf{i};")
+            lines.append("")
+            # Base Q8n0 values for restore after per-note override
+            if self._has_cutoff_override:
+                base_qs = []
+                for inst in self._instruments:
+                    if inst.cutoff is not None:
+                        hz = inst.cutoff
+                        q = min(255, (hz * 255) // (self.config.audio_rate // 2))
+                        base_qs.append(str(q))
+                    else:
+                        base_qs.append("0")
+                lines.append("// Base Q8n0 cutoff per channel (for restore after per-note override)")
+                lines.append(f"const uint8_t baseCutoffQ[NUM_CHANNELS] = {{{', '.join(base_qs)}}};")
+                lines.append("bool cutoffOvrActive[NUM_CHANNELS];")
+                lines.append("")
+
+            # LFO CUTOFF state
+            if self._has_lfo_cutoff:
+                lines.append("// LFO CUTOFF phase counters")
+                for i, inst in enumerate(self._instruments):
+                    if inst.lfo_cutoff is not None:
+                        period = max(1, int(self.config.control_rate / inst.lfo_cutoff.rate))
+                        lines.append(f"uint16_t lfoCutoffPhase{i} = 0;")
+                        lines.append(f"#define LFO_CUTOFF_PERIOD_{i} {period}U")
+                        lines.append(f"#define LFO_CUTOFF_DEPTH_{i} {inst.lfo_cutoff.depth}")
+                        base_hz = inst.cutoff if inst.cutoff is not None else 5000
+                        lines.append(f"#define LFO_CUTOFF_BASE_{i} {base_hz}U")
+                lines.append("")
 
         # Delay buffers
         if self._has_delay and n > 0:
@@ -676,6 +818,7 @@ class CodeGenerator:
             "    uint8_t isRest;     // 1 = rest, 0 = note",
             "    uint8_t simNext;    // 1 = trigger next event simultaneously",
             "    uint8_t velocity;   // note velocity 0-255",
+            "    uint16_t cutoffOvr; // per-note cutoff override in Hz (0 = use instrument default)",
             "};",
             "",
         ]
@@ -684,7 +827,7 @@ class CodeGenerator:
             lines.append("#define NUM_EVENTS 1")
             lines.append("")
             lines.append("const NoteEvent events[1] PROGMEM = {")
-            lines.append("    {0, 0, 1000, 1, 0, 255},  // empty — 1s of silence")
+            lines.append("    {0, 0, 1000, 1, 0, 255, 0},  // empty — 1s of silence")
             lines.append("};")
         else:
             lines.append(f"#define NUM_EVENTS {num}")
@@ -706,6 +849,8 @@ class CodeGenerator:
                     )
                     if ev.velocity < 255:
                         comment += f" vel={ev.velocity}"
+                    if ev.cutoff_override:
+                        comment += f" cutoff={ev.cutoff_override}Hz"
                 else:
                     comment = f"  // {ev.inst_name} {ev.freq}Hz {ev.duration_ms}ms"
 
@@ -716,7 +861,7 @@ class CodeGenerator:
                 sim_flag = 1 if ev.simultaneous_with_next else 0
                 lines.append(
                     f"    {{{ev.channel}, {ev.freq}, {ev.duration_ms},"
-                    f" {rest_flag}, {sim_flag}, {ev.velocity}}},{comment}"
+                    f" {rest_flag}, {sim_flag}, {ev.velocity}, {ev.cutoff_override}}},{comment}"
                 )
 
             lines.append("};")
@@ -775,7 +920,13 @@ class CodeGenerator:
         # Configure ADSR envelopes for each instrument
         for i, inst in enumerate(self._instruments):
             adsr = inst.adsr
-            if adsr:
+            if self._is_handpan[i]:
+                decay = adsr.decay_ms if adsr else (inst.decay_ms if inst.decay_ms else 600)
+                release = adsr.release_ms if adsr else 200
+                lines.append(f"    // {inst.name} handpan envelope (attack=1, sustain=0)")
+                lines.append(f"    env{i}.setADLevels(255, 200);")
+                lines.append(f"    env{i}.setTimes(1, {decay}, 0, {release});")
+            elif adsr:
                 lines.append(f"    // {inst.name} envelope")
                 lines.append(
                     f"    env{i}.setADLevels({adsr.attack_level},"
@@ -800,12 +951,25 @@ class CodeGenerator:
                     lines.append(f"    env{i}.setTimes(10, 50, 200, 100);")
             lines.append("")
 
+        # Initialize StateVariable filters
+        if self._has_filter:
+            lines.append("    // Initialize StateVariable filters")
+            for i, inst in enumerate(self._instruments):
+                if inst.cutoff is not None:
+                    q = min(255, (inst.cutoff * 255) // (self.config.audio_rate // 2))
+                    lines.append(
+                        f"    svf{i}.setCutoffFreqAndResonance({q}, {inst.resonance});"
+                    )
+            lines.append("")
+
         # Initialize channel active flags
         n = len(self._instruments)
         if n > 0:
             lines.append("    // Initialize channel state")
             lines.append("    for (uint8_t i = 0; i < NUM_CHANNELS; i++) {")
             lines.append("        channelActive[i] = false;")
+            if self._has_cutoff_override:
+                lines.append("        cutoffOvrActive[i] = false;")
             lines.append("    }")
             lines.append("")
 
@@ -829,26 +993,35 @@ class CodeGenerator:
             lines.append("    if (ch >= NUM_CHANNELS) return;")
             lines.append("    channelVelocity[ch] = vel;")
             if n == 1:
-                if self._has_glide and self._instruments[0].glide_ms > 0:
+                if self._is_handpan[0]:
+                    lines += [
+                        "    osc0.setFreq((int)freq);",
+                        "    hpOct0.setFreq((int)(freq * 2));",
+                        "    hpFif0.setFreq((int)(freq * 3));",
+                        "    hpNoise0.setFreq((int)freq);",
+                        "    hpNoteOnTime0 = mozziMicros();",
+                    ]
+                elif self._has_glide and self._instruments[0].glide_ms > 0:
                     lines += [
                         "    if (channelActive[0] && glideMs[0] > 0) {",
                         "        targetFreq[0] = freq;",
                         "        glideSteps[0] = (uint16_t)((unsigned long)glideMs[0] * MOZZI_CONTROL_RATE / 1000);",
                         "    } else {",
                     ]
-                if self._drum_tonal[0]:
-                    lines += [
-                        "    chanBaseFreq[0] = freq;",
-                        "    chanFreq[0] = freq * 5;",
-                        "    osc0.setFreq((int)chanFreq[0]);",
-                    ]
-                else:
-                    lines.append("    osc0.setFreq((int)freq);")
-                    if self._has_glide and self._instruments[0].glide_ms > 0:
+                if not self._is_handpan[0]:
+                    if self._drum_tonal[0]:
                         lines += [
-                            "        curGlideFreq[0] = freq;",
-                            "    }",
+                            "    chanBaseFreq[0] = freq;",
+                            "    chanFreq[0] = freq * 5;",
+                            "    osc0.setFreq((int)chanFreq[0]);",
                         ]
+                    else:
+                        lines.append("    osc0.setFreq((int)freq);")
+                        if self._has_glide and self._instruments[0].glide_ms > 0:
+                            lines += [
+                                "        curGlideFreq[0] = freq;",
+                                "    }",
+                            ]
                 lines += [
                     "    env0.noteOn(true);",
                     "    channelActive[0] = true;",
@@ -857,20 +1030,27 @@ class CodeGenerator:
                 for i in range(n):
                     prefix = "if" if i == 0 else "} else if"
                     lines.append(f"    {prefix} (ch == {i}) {{")
-                    if self._has_glide and self._instruments[i].glide_ms > 0:
-                        lines.append(f"        if (channelActive[{i}] && glideMs[{i}] > 0) {{")
-                        lines.append(f"            targetFreq[{i}] = freq;")
-                        lines.append(f"            glideSteps[{i}] = (uint16_t)((unsigned long)glideMs[{i}] * MOZZI_CONTROL_RATE / 1000);")
-                        lines.append(f"        }} else {{")
-                    if self._drum_tonal[i]:
-                        lines.append(f"        chanBaseFreq[{i}] = freq;")
-                        lines.append(f"        chanFreq[{i}] = freq * 5;")
-                        lines.append(f"        osc{i}.setFreq((int)chanFreq[{i}]);")
-                    else:
+                    if self._is_handpan[i]:
                         lines.append(f"        osc{i}.setFreq((int)freq);")
-                    if self._has_glide and self._instruments[i].glide_ms > 0:
-                        lines.append(f"            curGlideFreq[{i}] = freq;")
-                        lines.append(f"        }}")
+                        lines.append(f"        hpOct{i}.setFreq((int)(freq * 2));")
+                        lines.append(f"        hpFif{i}.setFreq((int)(freq * 3));")
+                        lines.append(f"        hpNoise{i}.setFreq((int)freq);")
+                        lines.append(f"        hpNoteOnTime{i} = mozziMicros();")
+                    else:
+                        if self._has_glide and self._instruments[i].glide_ms > 0:
+                            lines.append(f"        if (channelActive[{i}] && glideMs[{i}] > 0) {{")
+                            lines.append(f"            targetFreq[{i}] = freq;")
+                            lines.append(f"            glideSteps[{i}] = (uint16_t)((unsigned long)glideMs[{i}] * MOZZI_CONTROL_RATE / 1000);")
+                            lines.append(f"        }} else {{")
+                        if self._drum_tonal[i]:
+                            lines.append(f"        chanBaseFreq[{i}] = freq;")
+                            lines.append(f"        chanFreq[{i}] = freq * 5;")
+                            lines.append(f"        osc{i}.setFreq((int)chanFreq[{i}]);")
+                        else:
+                            lines.append(f"        osc{i}.setFreq((int)freq);")
+                        if self._has_glide and self._instruments[i].glide_ms > 0:
+                            lines.append(f"            curGlideFreq[{i}] = freq;")
+                            lines.append(f"        }}")
                     lines.append(f"        env{i}.noteOn(true);")
                     lines.append(f"        channelActive[{i}] = true;")
                 lines.append("    }")
@@ -886,14 +1066,64 @@ class CodeGenerator:
                 "    env0.noteOff();",
                 "    channelActive[0] = false;",
             ]
+            if self._has_filter and self._instruments[0].cutoff is not None:
+                lines += [
+                    "    if (cutoffOvrActive[0]) {",
+                    "        svf0.setCutoffFreqAndResonance(baseCutoffQ[0], "
+                    f"{self._instruments[0].resonance});",
+                    "        cutoffOvrActive[0] = false;",
+                    "    }",
+                ]
         else:
             for i in range(n):
                 prefix = "if" if i == 0 else "} else if"
                 lines.append(f"    {prefix} (ch == {i}) {{")
                 lines.append(f"        env{i}.noteOff();")
                 lines.append(f"        channelActive[{i}] = false;")
+                if self._has_filter and self._instruments[i].cutoff is not None:
+                    lines += [
+                        f"        if (cutoffOvrActive[{i}]) {{",
+                        f"            svf{i}.setCutoffFreqAndResonance(baseCutoffQ[{i}], "
+                        f"{self._instruments[i].resonance});",
+                        f"            cutoffOvrActive[{i}] = false;",
+                        f"        }}",
+                    ]
             lines.append("    }")
         lines += ["}", ""]
+
+        # applyCutoffOverride helper — only emitted when filter is active
+        if self._has_filter:
+            lines += [
+                "void applyCutoffOverride(uint8_t ch, uint16_t hz) {",
+            ]
+            if n == 0:
+                lines.append("    (void)ch; (void)hz;")
+            elif n == 1:
+                if self._instruments[0].cutoff is not None:
+                    lines += [
+                        "    svf0.setCutoffFreqAndResonance(hzToQ8n0(hz), "
+                        f"{self._instruments[0].resonance});",
+                        "    cutoffOvrActive[0] = true;",
+                    ]
+                else:
+                    lines.append("    (void)ch; (void)hz;")
+            else:
+                first = True
+                for i in range(n):
+                    if self._instruments[i].cutoff is not None:
+                        prefix = "if" if first else "} else if"
+                        first = False
+                        lines.append(f"    {prefix} (ch == {i}) {{")
+                        lines.append(
+                            f"        svf{i}.setCutoffFreqAndResonance(hzToQ8n0(hz), "
+                            f"{self._instruments[i].resonance});"
+                        )
+                        lines.append(f"        cutoffOvrActive[{i}] = true;")
+                if not first:
+                    lines.append("    }")
+                else:
+                    lines.append("    (void)ch; (void)hz;")
+            lines += ["}", ""]
 
         return "\n".join(lines)
 
@@ -970,6 +1200,54 @@ class CodeGenerator:
                     lines.append(f"    }}")
             lines.append("")
 
+        # LFO CUTOFF — tick triangle wave, update StateVariable filter
+        if self._has_lfo_cutoff:
+            lines.append("    // LFO CUTOFF modulation")
+            for i, inst in enumerate(self._instruments):
+                if inst.lfo_cutoff is not None:
+                    lines += [
+                        f"    lfoCutoffPhase{i}++;",
+                        f"    if (lfoCutoffPhase{i} >= LFO_CUTOFF_PERIOD_{i} * 2U) lfoCutoffPhase{i} = 0;",
+                        f"    {{",
+                        f"        int16_t _lmod{i};",
+                        f"        if (lfoCutoffPhase{i} < LFO_CUTOFF_PERIOD_{i}) {{",
+                        f"            _lmod{i} = -(int16_t)LFO_CUTOFF_DEPTH_{i} + (int16_t)((long)lfoCutoffPhase{i} * 2 * LFO_CUTOFF_DEPTH_{i} / LFO_CUTOFF_PERIOD_{i});",
+                        f"        }} else {{",
+                        f"            _lmod{i} = (int16_t)LFO_CUTOFF_DEPTH_{i} - (int16_t)(((long)(lfoCutoffPhase{i} - LFO_CUTOFF_PERIOD_{i}) * 2 * LFO_CUTOFF_DEPTH_{i}) / LFO_CUTOFF_PERIOD_{i});",
+                        f"        }}",
+                        f"        if (!cutoffOvrActive[{i}]) {{",
+                        f"            int16_t _hz{i} = (int16_t)LFO_CUTOFF_BASE_{i} + _lmod{i};",
+                        f"            if (_hz{i} < 20) _hz{i} = 20;",
+                        f"            if (_hz{i} > 20000) _hz{i} = 20000;",
+                        f"            svf{i}.setCutoffFreqAndResonance(hzToQ8n0((uint16_t)_hz{i}), {inst.resonance});",
+                        f"        }}",
+                        f"    }}",
+                    ]
+            lines.append("")
+
+        # LFO PAN — tick triangle wave, update curPan
+        if self._has_lfo_pan:
+            lines.append("    // LFO PAN modulation")
+            for i, inst in enumerate(self._instruments):
+                if inst.lfo_pan is not None:
+                    lines += [
+                        f"    lfoPanPhase{i}++;",
+                        f"    if (lfoPanPhase{i} >= LFO_PAN_PERIOD_{i} * 2U) lfoPanPhase{i} = 0;",
+                        f"    {{",
+                        f"        int16_t _pmod{i};",
+                        f"        if (lfoPanPhase{i} < LFO_PAN_PERIOD_{i}) {{",
+                        f"            _pmod{i} = -(int16_t)LFO_PAN_DEPTH_{i} + (int16_t)((long)lfoPanPhase{i} * 2 * LFO_PAN_DEPTH_{i} / LFO_PAN_PERIOD_{i});",
+                        f"        }} else {{",
+                        f"            _pmod{i} = (int16_t)LFO_PAN_DEPTH_{i} - (int16_t)(((long)(lfoPanPhase{i} - LFO_PAN_PERIOD_{i}) * 2 * LFO_PAN_DEPTH_{i}) / LFO_PAN_PERIOD_{i});",
+                        f"        }}",
+                        f"        int16_t _pan{i} = (int16_t)LFO_PAN_BASE_{i} + _pmod{i};",
+                        f"        if (_pan{i} < 0) _pan{i} = 0;",
+                        f"        if (_pan{i} > 255) _pan{i} = 255;",
+                        f"        curPan[{i}] = (uint8_t)_pan{i};",
+                        f"    }}",
+                    ]
+            lines.append("")
+
         lines += [
             "    if (currentEvent >= NUM_EVENTS) {",
             "        playing = false;",
@@ -1000,6 +1278,14 @@ class CodeGenerator:
             "            if (!ev.isRest) {",
             "                triggerNoteOn(ev.channel, ev.freq, ev.velocity);",
             "                channelNoteOff[ev.channel] = now + (unsigned long)ev.duration * 1000UL;",
+            *(
+                [
+                    "                if (ev.cutoffOvr != 0) {",
+                    "                    applyCutoffOverride(ev.channel, ev.cutoffOvr);",
+                    "                }",
+                ]
+                if self._has_filter else []
+            ),
             "            }",
             "            // BPM change: channel 254, freq = new msPerBeat",
             "            if (ev.channel == 254 && ev.isRest) {",
@@ -1054,11 +1340,29 @@ class CodeGenerator:
 
             lines.append(f"    int16_t s{i} = 0;")
             lines.append(f"    if (channelActive[{i}]) {{")
-            lines.append(
-                f"        s{i} ="
-                f" ((int16_t)osc{i}.next()"
-                f" * (int16_t)env{i}.next()) >> 8;"
-            )
+
+            if self._is_handpan[i]:
+                decay_ms = inst.decay_ms if inst.decay_ms else 600
+                oct_decay_us = int(decay_ms * 0.6 * 1000)
+                fif_decay_us = int(decay_ms * 0.35 * 1000)
+                lines.append(f"        int16_t envVal{i} = (int16_t)env{i}.next();")
+                lines.append(f"        int16_t hpF{i} = (int16_t)osc{i}.next();")
+                lines.append(f"        int16_t hpO{i} = (int16_t)hpOct{i}.next();")
+                lines.append(f"        int16_t hpP{i} = (int16_t)hpFif{i}.next();")
+                lines.append(f"        unsigned long hpAge{i} = mozziMicros() - hpNoteOnTime{i};")
+                lines.append(f"        int16_t octAmp{i} = (hpAge{i} < {oct_decay_us}UL) ? (int16_t)(153 - (int32_t)153 * hpAge{i} / {oct_decay_us}UL) : 0;")
+                lines.append(f"        int16_t fifAmp{i} = (hpAge{i} < {fif_decay_us}UL) ? (int16_t)(76 - (int32_t)76 * hpAge{i} / {fif_decay_us}UL) : 0;")
+                lines.append(f"        int16_t nAmp{i} = (hpAge{i} < 12000UL) ? 38 : 0;")
+                lines.append(f"        s{i} = (hpF{i} * 255 + hpO{i} * octAmp{i} + hpP{i} * fifAmp{i}")
+                lines.append(f"             + (int16_t)hpNoise{i}.next() * nAmp{i}) >> 8;")
+                lines.append(f"        s{i} = (s{i} * envVal{i}) >> 8;")
+            else:
+                lines.append(
+                    f"        s{i} ="
+                    f" ((int16_t)osc{i}.next()"
+                    f" * (int16_t)env{i}.next()) >> 8;"
+                )
+
             lines.append(
                 f"        s{i} = (s{i}"
                 f" * (int16_t)channelVol[{i}]) >> 8;"
@@ -1068,13 +1372,9 @@ class CodeGenerator:
                 f" * (int16_t)channelVelocity[{i}]) >> 8;"
             )
 
-            # Low-pass filter
+            # StateVariable low-pass filter
             if self._has_filter and inst.cutoff is not None:
-                lines.append(f"        // LPF")
-                lines.append(f"        int16_t alpha{i} = (int16_t)(((uint32_t)channelCutoff[{i}] * 256) / (MOZZI_AUDIO_RATE / 2));")
-                lines.append(f"        if (alpha{i} > 255) alpha{i} = 255;")
-                lines.append(f"        lpfState[{i}] += (alpha{i} * (s{i} - lpfState[{i}])) >> 8;")
-                lines.append(f"        s{i} = lpfState[{i}];")
+                lines.append(f"        s{i} = svf{i}.next(s{i});")
 
             lines.append(f"    }}")
 
@@ -1091,8 +1391,8 @@ class CodeGenerator:
                 lines.append(f"    }}")
 
             if self._is_stereo:
-                lines.append(f"    sampleL += (s{i} * (int16_t)(255 - channelPan[{i}])) >> 8;")
-                lines.append(f"    sampleR += (s{i} * (int16_t)channelPan[{i}]) >> 8;")
+                lines.append(f"    sampleL += (s{i} * (int16_t)(255 - curPan[{i}])) >> 8;")
+                lines.append(f"    sampleR += (s{i} * (int16_t)curPan[{i}]) >> 8;")
             else:
                 lines.append(f"    sample += s{i};")
             lines.append("")

@@ -1,0 +1,32 @@
+# Handpan Garden -- WAVE HANDPAN demo
+# Additive synthesis: fundamental + octave + octave-fifth + noise transient
+
+BPM 72
+
+INSTRUMENT pan:
+    TYPE SYNTH
+    WAVE HANDPAN
+    DECAY 800
+    REVERB 200
+    DELAY 375 100
+    VOLUME 200
+
+SEQUENCE verse:
+    PLAY pan D4 2
+    PLAY pan A4 1
+    PLAY pan Bb4 1
+    PLAY pan F4 2
+    PLAY pan A4 1
+    PLAY pan E4 1
+
+SEQUENCE chorus:
+    PLAY pan D5 1
+    PLAY pan A4 1
+    PLAY pan F4 1
+    PLAY pan E4 1
+    PLAY pan D4 2
+    REST 2
+
+LOOP 2:
+    PLAY_SEQUENCE verse
+PLAY_SEQUENCE chorus
