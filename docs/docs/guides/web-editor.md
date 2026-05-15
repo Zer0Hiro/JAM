@@ -43,7 +43,7 @@ Click **Compile** to generate Mozzi C++ source. The output appears in the editor
 Click **Upload** to compile and flash directly to a connected ESP32. You can specify the GPIO pin for audio output.
 
 :::warning
-USB upload requires the ESP32 to be physically connected and accessible. In WSL2, you need `usbipd-win` for USB passthrough — see the [hardware upload guide](/docs/guides/upload-to-hardware#wsl2-usb-passthrough).
+USB upload requires the ESP32 to be physically connected and accessible. In WSL2, you need `usbipd-win` for USB passthrough — see the [hardware upload guide](/guides/upload-to-hardware#wsl2-usb-passthrough).
 :::
 
 ### JAMai Assistant

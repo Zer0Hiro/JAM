@@ -4,7 +4,7 @@ import {themes as prismThemes} from 'prism-react-renderer';
 const config = {
   title: 'JAM DSL',
   tagline: 'A music notation language that compiles to hardware',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/favicon.svg',
 
   future: {
     v4: true,
@@ -31,6 +31,7 @@ const config = {
       /** @type {import('@docusaurus/preset-classic').Options} */
       ({
         docs: {
+          routeBasePath: '/',
           sidebarPath: './sidebars.js',
           editUrl:
             'https://github.com/zer0hiro/JAM-DSL-Compiler/tree/main/docs/',
@@ -51,7 +52,7 @@ const config = {
         hashed: true,
         language: ['en'],
         indexBlog: false,
-        docsRouteBasePath: '/docs',
+        docsRouteBasePath: '/',
       }),
     ],
   ],
@@ -77,7 +78,7 @@ const config = {
             label: 'Docs',
           },
           {
-            to: '/docs/guides/getting-started',
+            to: '/guides/getting-started',
             label: 'Guides',
             position: 'left',
           },
@@ -96,15 +97,15 @@ const config = {
             items: [
               {
                 label: 'Introduction',
-                to: '/docs/intro',
+                to: '/',
               },
               {
                 label: 'Language Reference',
-                to: '/docs/language/global-config',
+                to: '/language/global-config',
               },
               {
                 label: 'Examples',
-                to: '/docs/examples',
+                to: '/examples',
               },
             ],
           },
@@ -113,15 +114,15 @@ const config = {
             items: [
               {
                 label: 'Getting Started',
-                to: '/docs/guides/getting-started',
+                to: '/guides/getting-started',
               },
               {
                 label: 'Your First Song',
-                to: '/docs/guides/first-song',
+                to: '/guides/first-song',
               },
               {
                 label: 'Upload to Hardware',
-                to: '/docs/guides/upload-to-hardware',
+                to: '/guides/upload-to-hardware',
               },
             ],
           },
