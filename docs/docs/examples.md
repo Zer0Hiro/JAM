@@ -222,3 +222,93 @@ PLAY_SEQUENCE pad_chords
 LOOP 4:
     PLAY_SEQUENCE pluck_line
 ```
+
+## Bell Melody in 3/4
+
+Demonstrates TIME_SIGNATURE, WAVE BELL, LEGATO, POLYPHONY, extended REVERB, and smooth BPM ramp.
+
+```
+BPM 92
+TIME_SIGNATURE 3 4
+
+INSTRUMENT bell:
+    TYPE SYNTH
+    WAVE BELL
+    ADSR 1 400 0 600
+    REVERB 160 DECAY 4000 ROOM 0.8
+    LEGATO
+    POLYPHONY 3
+    VOLUME 190
+
+INSTRUMENT chime:
+    TYPE SYNTH
+    WAVE BELL
+    ADSR 1 300 0 400
+    REVERB 120 DECAY 2000 ROOM 0.5
+    POLYPHONY 2
+    PAN 80
+    VOLUME 150
+
+INSTRUMENT low_bell:
+    TYPE SYNTH
+    WAVE BELL
+    ADSR 1 500 0 800
+    REVERB 200 DECAY 5000 ROOM 0.9
+    LEGATO
+    POLYPHONY 2
+    PAN 180
+    VOLUME 170
+
+SEQUENCE waltz_melody:
+    VELOCITY_CURVE CRESCENDO 100 200 6
+    PLAY bell E5 1
+    PLAY bell D5 0.5
+    PLAY bell C5 0.5
+    PLAY bell B4 1
+    PLAY bell A4 1.5
+    PLAY bell G4 1.5
+
+SEQUENCE waltz_chords:
+    PLAY chime [C4 E4 G4] 3
+    PLAY chime [A3 C4 E4] 3
+    PLAY chime [F3 A3 C4] 3
+    PLAY chime [G3 B3 D4] 3
+
+SEQUENCE bass_bells:
+    PLAY low_bell C3 2
+    REST 1
+    PLAY low_bell A2 2
+    REST 1
+    PLAY low_bell F2 2
+    REST 1
+    PLAY low_bell G2 2
+    REST 1
+
+PATTERN waltz_tap:
+    BEAT 1: bell E6 0.5 180
+    BEAT 2: bell E6 0.5 100
+    BEAT 3: bell E6 0.5 100
+
+FADE_IN 3
+LOOP 2:
+    PLAY_TOGETHER:
+        PLAY_SEQUENCE waltz_melody
+        PLAY_SEQUENCE waltz_chords
+        PLAY_SEQUENCE bass_bells
+        PLAY_PATTERN waltz_tap
+
+BPM 80 OVER 6
+VELOCITY_CURVE DECRESCENDO 200 60 6
+
+LOOP 1:
+    PLAY_TOGETHER:
+        PLAY_SEQUENCE waltz_melody
+        PLAY_SEQUENCE waltz_chords
+        PLAY_SEQUENCE bass_bells
+
+FADE_OUT 6
+LOOP 1:
+    PLAY_TOGETHER:
+        PLAY_SEQUENCE waltz_chords
+        PLAY_SEQUENCE bass_bells
+```

@@ -42,6 +42,15 @@ The compiler runs semantic analysis after parsing and reports errors and warning
 | Per-note CUTOFF out of range | CUTOFF override not 20–20000 |
 | VELOCITY_CURVE velocity out of range | Start or end velocity not 0–255 |
 | VELOCITY_CURVE note_count out of range | Note count not 1–128 |
+| TIME_SIGNATURE beats out of range | Beats not 1–16 |
+| TIME_SIGNATURE division invalid | Division not one of 1, 2, 4, 8, 16 |
+| BEAT exceeds bar length | BEAT position exceeds the declared TIME_SIGNATURE bar length |
+| REVERB DECAY out of range | REVERB DECAY not 100–10000 |
+| REVERB ROOM out of range | REVERB ROOM not 0.0–1.0 |
+| POLYPHONY out of range | POLYPHONY not 1–8 |
+| BELL on DRUM | BELL wave cannot be used with DRUM instruments |
+| BPM OVER target out of range | Target BPM not 1–300 |
+| BPM OVER beats out of range | Ramp beats not 1–64 |
 
 ## Warnings (compilation continues)
 
@@ -72,3 +81,7 @@ The compiler runs semantic analysis after parsing and reports errors and warning
 | Note outside KEY | Note pitch class not in declared scale |
 | High SWING | SWING `> 75` is extreme, may sound unmusical |
 | High HUMANIZE | HUMANIZE `> 30` creates very loose timing |
+| No TIME_SIGNATURE with high BEAT | BEAT position `> 4` used without explicit TIME_SIGNATURE — assumes 4/4 |
+| LEGATO on DRUM | LEGATO has no effect on drum instruments |
+| High total polyphony | Total POLYPHONY across all instruments exceeds 8 (AVR RAM) |
+| BPM OVER short ramp | BPM ramp `< 2` beats may sound like a glitch |

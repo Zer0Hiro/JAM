@@ -32,14 +32,14 @@ INSTRUMENT kick:
 | Property | Required | Values | Description |
 |----------|----------|--------|-------------|
 | `TYPE` | yes | `SYNTH`, `DRUM` | Melodic synth or drum hit |
-| `WAVE` | yes | `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `PLUCK`, `HANDPAN` | Oscillator waveform |
+| `WAVE` | yes | `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `PLUCK`, `HANDPAN`, `BELL` | Oscillator waveform |
 | `ADSR` | no | `attack decay sustain release` (all in ms) | Envelope shape (SYNTH only) |
 | `VOLUME` | no | `0`–`255` (default: `200`) | Channel volume |
 | `FREQ` | no | integer Hz | Fixed frequency (DRUM only) |
 | `DECAY` | no | integer ms | Decay time (DRUM only) |
 | `CUTOFF` | no | `20`–`20000` Hz | Low-pass filter cutoff frequency |
 | `RESONANCE` | no | `0`–`255` (default: `0`) | Filter resonance / Q factor |
-| `REVERB` | no | `0`–`255` (default: `0`) | Reverb wet/dry mix |
+| `REVERB` | no | `0`–`255` (default: `0`) `[DECAY ms] [ROOM 0.0–1.0]` | Reverb wet/dry mix, with optional decay time and room size |
 | `DELAY` | no | `time_ms feedback` (0–2000, 0–255) | Echo delay time and feedback |
 | `GLIDE` | no | `0`–`1000` ms (default: `0`) | Portamento / pitch slide time |
 | `PAN` | no | `0`–`255` (default: `127`) | Stereo pan (0=left, 127=center, 255=right) |
@@ -47,6 +47,8 @@ INSTRUMENT kick:
 | `VOICES` | no | `1`–`4` (default: `1`) | Number of detuned oscillator voices (unison) |
 | `DETUNE` | no | `0`–`100` cents (default: `0`) | Detune spread between voices |
 | `CHORUS` | no | `0`–`255` (default: `0`) | Chorus effect wet/dry mix |
+| `LEGATO` | no | flag (no value) | Consecutive notes overlap instead of cutting previous note. SYNTH only |
+| `POLYPHONY` | no | `1`–`8` (default: `1`) | Max simultaneous notes per instrument |
 
 ## Waveforms
 
@@ -59,6 +61,7 @@ INSTRUMENT kick:
 | `NOISE` | White noise — percussion, hi-hats, snares |
 | `PLUCK` | Karplus-Strong string — guitar, harp, pizzicato |
 | `HANDPAN` | Struck metal membrane — additive synthesis (fundamental + octave + octave-fifth + noise transient). SYNTH only. Attack always 1ms, sustain always 0. Default envelope: ADSR 1 600 0 200. Use DECAY to control ring time. |
+| `BELL` | Bell — sine with fast-decaying upper harmonics, clean attack transient. SYNTH only. Suggested envelope: ADSR 1 400 0 600. |
 
 :::tip
 Start with `SIN` for clean tones, `SAW` for bass, and `NOISE` for percussion. `PLUCK` gives instant guitar-like sounds without complex ADSR tuning.
@@ -143,3 +146,69 @@ INSTRUMENT supersaw:
 - `DETUNE > 0` requires `VOICES > 1` (otherwise error)
 - `DETUNE > 50` warns about potentially out-of-tune results
 - `VOICES` and `DETUNE` have no effect on DRUM instruments
+
+## Extended REVERB Syntax
+
+The `REVERB` property supports optional `DECAY` and `ROOM` parameters:
+
+```
+INSTRUMENT pad:
+    TYPE SYNTH
+    WAVE SIN
+    REVERB 180 DECAY 3000 ROOM 0.7
+    ADSR 50 100 300 200
+    VOLUME 180
+```
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| `mix` | 0–255 | 0 | Reverb wet/dry mix (required) |
+| `DECAY` | 100–10000 ms | — | Reverb tail length |
+| `ROOM` | 0.0–1.0 | — | Room size (0 = small, 1 = cathedral) |
+
+All three apply per-instrument independently. Per-note `REVERB:value` overrides still control mix only.
+
+## LEGATO
+
+Boolean flag — its presence enables legato mode. Consecutive notes overlap rather than cutting the previous note.
+
+```
+INSTRUMENT lead:
+    TYPE SYNTH
+    WAVE SAW
+    LEGATO
+    ADSR 10 50 200 100
+    VOLUME 180
+```
+
+- Only valid on `SYNTH` instruments — warning if used on `DRUM`
+- Interacts with `POLYPHONY`: if both set, `POLYPHONY` controls max simultaneous voices
+
+:::tip
+Combine `LEGATO` with `GLIDE` for smooth, connected melodic lines where notes slide into each other.
+:::
+
+## POLYPHONY
+
+Controls how many notes from a single instrument can sound at the same time.
+
+```
+INSTRUMENT pad:
+    TYPE SYNTH
+    WAVE SAW
+    POLYPHONY 4
+    LEGATO
+    ADSR 50 100 300 200
+    VOLUME 180
+```
+
+| Property | Range | Default | Description |
+|----------|-------|---------|-------------|
+| `POLYPHONY` | 1–8 | 1 | Max simultaneous notes per instrument |
+
+- Default `1` = monophonic (each new note cuts the previous)
+- Warning if total polyphony across all instruments exceeds 8 (AVR RAM)
+
+:::danger
+High polyphony values consume significant RAM. On AVR targets (Arduino Uno), keep total polyphony across all instruments at 8 or below.
+:::

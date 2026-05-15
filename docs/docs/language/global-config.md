@@ -8,6 +8,7 @@ Set at the top level of a `.jam` file. All optional — defaults shown.
 
 ```
 BPM 120              # tempo in beats per minute (1-300)
+TIME_SIGNATURE 3 4   # 3 beats per bar, quarter note = 1 beat
 AUDIO_RATE 16384     # Mozzi audio sample rate (16384 or 32768)
 CONTROL_RATE 64      # Mozzi control loop rate in Hz
 KEY C4 MAJOR         # lock notes to C major scale
@@ -20,6 +21,7 @@ HUMANIZE 10          # random timing variation per note
 | Setting | Default | Valid Values | Description |
 |---------|---------|-------------|-------------|
 | `BPM` | 120 | 1–300 | Tempo in beats per minute |
+| `TIME_SIGNATURE` | `4 4` | `<beats> <division>` — beats 1–16, division 1/2/4/8/16 | Beats per bar and note value per beat. Changes bar length for `PATTERN` blocks |
 | `AUDIO_RATE` | 16384 | 16384, 32768 | Mozzi audio sample rate |
 | `CONTROL_RATE` | 64 | positive integer | Mozzi control loop rate in Hz |
 | `KEY` | none | `KEY <root> <scale>` | Lock notes to a musical scale |
@@ -60,3 +62,28 @@ KEY <root_note> <scale_type>
 | `BLUES` | 0, 3, 5, 6, 7, 10 | Bluesy, soulful |
 
 When `KEY` is set, the compiler warns on any `PLAY` note whose pitch class falls outside the scale.
+
+## Time Signature
+
+Set the time signature for your composition. This affects the bar length assumed by `PATTERN` blocks and validates `BEAT` positions.
+
+```
+TIME_SIGNATURE 3 4        # waltz time — 3 quarter-note beats per bar
+TIME_SIGNATURE 6 8        # compound time — 6 eighth-note beats per bar
+TIME_SIGNATURE 5 4        # irregular time — 5 quarter-note beats per bar
+```
+
+### Syntax
+
+```
+TIME_SIGNATURE <beats> <division>
+```
+
+- **beats** — number of beats per bar (1–16)
+- **division** — note value of one beat: `1` (whole), `2` (half), `4` (quarter), `8` (eighth), `16` (sixteenth)
+
+Default is `4 4` (four quarter-note beats per bar). When set, the compiler validates that `BEAT` positions in `PATTERN` blocks do not exceed the declared bar length.
+
+:::note
+If no `TIME_SIGNATURE` is set and a `BEAT` position > 4 is used, the compiler issues a warning (assuming 4/4 time).
+:::

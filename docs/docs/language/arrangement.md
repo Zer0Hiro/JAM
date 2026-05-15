@@ -114,6 +114,27 @@ LOOP 2:
 
 When `BPM` appears after arrangement items have started, it changes the tempo for all subsequent events. When it appears before any arrangement, it sets the initial tempo.
 
+### Smooth BPM Ramp
+
+`BPM <target> OVER <beats>` gradually ramps from the current tempo to `<target>` over `<beats>` beats:
+
+```
+BPM 100
+LOOP 4:
+    PLAY_SEQUENCE verse
+BPM 140 OVER 8                  # ramp from 100 to 140 over 8 beats
+LOOP 4:
+    PLAY_SEQUENCE chorus
+```
+
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| `target` | 1–300 | Target BPM |
+| `beats` | 1–64 | Number of beats over which the ramp occurs |
+
+- Existing `BPM <value>` (instant change) stays unchanged
+- Warning if ramp is very short (< 2 beats) — may sound like a glitch rather than a smooth transition
+
 `VOLUME` sets the master volume (0–255) for everything that follows:
 
 ```

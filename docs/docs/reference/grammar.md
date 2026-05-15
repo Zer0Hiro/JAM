@@ -10,21 +10,24 @@ sidebar_position: 3
 program        := (config | instrument | sequence | pattern | arrangement)* EOF
 
 config         := ("BPM" | "AUDIO_RATE" | "CONTROL_RATE") NUMBER
+                 | "TIME_SIGNATURE" NUMBER NUMBER
                  | "KEY" NOTE ("MAJOR"|"MINOR"|"DORIAN"|"PHRYGIAN"|"LYDIAN"|"MIXOLYDIAN"|"PENTATONIC"|"BLUES")
                  | "SWING" NUMBER
                  | "HUMANIZE" NUMBER
 
 instrument     := "INSTRUMENT" IDENT ":"
                       ("TYPE" ("SYNTH" | "DRUM")
-                     | "WAVE" ("SIN" | "SAW" | "SQUARE" | "TRIANGLE" | "NOISE" | "PLUCK" | "HANDPAN")
+                     | "WAVE" ("SIN" | "SAW" | "SQUARE" | "TRIANGLE" | "NOISE" | "PLUCK" | "HANDPAN" | "BELL")
                      | "ADSR" NUMBER NUMBER NUMBER NUMBER
                      | "VOLUME" NUMBER
                      | "FREQ" NUMBER
                      | "DECAY" NUMBER
                      | "CUTOFF" NUMBER
                      | "RESONANCE" NUMBER
-                     | "REVERB" NUMBER
+                     | "REVERB" NUMBER ["DECAY" NUMBER] ["ROOM" NUMBER]
                      | "DELAY" NUMBER NUMBER
+                     | "LEGATO"
+                     | "POLYPHONY" NUMBER
                      | "GLIDE" NUMBER
                      | "PAN" NUMBER
                      | "LFO" NUMBER NUMBER ("VOLUME" | "PITCH" | "CUTOFF" | "PAN")
@@ -49,7 +52,7 @@ pattern        := "PATTERN" IDENT ":"
                       ("BEAT" NUMBER ":" IDENT [NOTE] [NUMBER] [NUMBER] [fx_override]*)+
 
 arrangement    := (loop | play_seq | play_pat | play_together | bpm_change | vol_change | fade)+
-bpm_change     := "BPM" NUMBER
+bpm_change     := "BPM" NUMBER ["OVER" NUMBER]
 vol_change     := "VOLUME" NUMBER
 fade           := ("FADE_IN" | "FADE_OUT") NUMBER
 loop           := "LOOP" NUMBER ":" INDENT arrangement DEDENT
@@ -62,7 +65,7 @@ play_together  := "PLAY_TOGETHER" ":" INDENT arrangement DEDENT
 
 All keywords must be UPPERCASE:
 
-`BPM`, `AUDIO_RATE`, `CONTROL_RATE`, `KEY`, `SWING`, `HUMANIZE`, `MAJOR`, `MINOR`, `DORIAN`, `PHRYGIAN`, `LYDIAN`, `MIXOLYDIAN`, `PENTATONIC`, `BLUES`, `INSTRUMENT`, `TYPE`, `SYNTH`, `DRUM`, `WAVE`, `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `PLUCK`, `HANDPAN`, `ADSR`, `VOLUME`, `FREQ`, `DECAY`, `CUTOFF`, `RESONANCE`, `REVERB`, `DELAY`, `GLIDE`, `PAN`, `LFO`, `PITCH`, `VOICES`, `DETUNE`, `CHORUS`, `SEQUENCE`, `PATTERN`, `PLAY`, `REST`, `BEAT`, `LOOP`, `PLAY_SEQUENCE`, `PLAY_PATTERN`, `PLAY_TOGETHER`, `FADE_IN`, `FADE_OUT`, `VELOCITY_CURVE`, `CRESCENDO`, `DECRESCENDO`, `OFF`
+`BPM`, `TIME_SIGNATURE`, `AUDIO_RATE`, `CONTROL_RATE`, `KEY`, `SWING`, `HUMANIZE`, `MAJOR`, `MINOR`, `DORIAN`, `PHRYGIAN`, `LYDIAN`, `MIXOLYDIAN`, `PENTATONIC`, `BLUES`, `INSTRUMENT`, `TYPE`, `SYNTH`, `DRUM`, `WAVE`, `SIN`, `SAW`, `SQUARE`, `TRIANGLE`, `NOISE`, `PLUCK`, `HANDPAN`, `BELL`, `ADSR`, `VOLUME`, `FREQ`, `DECAY`, `CUTOFF`, `RESONANCE`, `REVERB`, `ROOM`, `DELAY`, `GLIDE`, `PAN`, `LFO`, `PITCH`, `LEGATO`, `POLYPHONY`, `VOICES`, `DETUNE`, `CHORUS`, `SEQUENCE`, `PATTERN`, `PLAY`, `REST`, `BEAT`, `LOOP`, `PLAY_SEQUENCE`, `PLAY_PATTERN`, `PLAY_TOGETHER`, `FADE_IN`, `FADE_OUT`, `VELOCITY_CURVE`, `CRESCENDO`, `DECRESCENDO`, `OFF`, `OVER`
 
 ## Identifiers
 

@@ -32,7 +32,7 @@ BEAT <position>: <instrument> [C4 E4 G4] [duration] [velocity] [CUTOFF:<value>] 
 - **duration** — optional, in beats
 - **velocity** — optional, `0`–`255`. Per-hit volume scaling
 - **CUTOFF:value** / **REVERB:value** / **DELAY:time:feedback** — optional per-note effect overrides (same as PLAY)
-- Default bar length: 4 beats (4/4 time)
+- Default bar length: 4 beats (4/4 time). Set `TIME_SIGNATURE` to change (see [Global Config](global-config.md#time-signature))
 
 ## Simultaneous Playback
 
