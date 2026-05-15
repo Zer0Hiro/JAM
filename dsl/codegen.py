@@ -166,6 +166,8 @@ class CodeGenerator:
             if inst.wave == WaveType.HANDPAN:
                 self._needed_waves.add(WaveType.SIN)
                 self._needed_waves.add(WaveType.NOISE)
+            elif inst.wave == WaveType.BELL:
+                self._needed_waves.add(WaveType.SIN)
             elif inst.wave != WaveType.PLUCK:
                 self._needed_waves.add(inst.wave)
 
@@ -181,6 +183,12 @@ class CodeGenerator:
             inst.wave == WaveType.HANDPAN for inst in self._instruments
         ]
         self._has_handpan = any(self._is_handpan)
+
+        # Identify BELL channels (additive synthesis: SIN fundamental + 2 SIN harmonics, no noise)
+        self._is_bell: list[bool] = [
+            inst.wave == WaveType.BELL for inst in self._instruments
+        ]
+        self._has_bell = any(self._is_bell)
 
         # Flatten arrangement into a linear event list
         self._events: list[FlatEvent] = []
@@ -270,6 +278,21 @@ class CodeGenerator:
         ms_per_beat = 60000.0 / self.program.config.bpm
         return max(1, round(beats * ms_per_beat))
 
+    def _emit_bpm_ramp(self, target_bpm: int, over_beats: int) -> None:
+        """Emit a gradual BPM ramp as a series of BPM change events."""
+        steps = max(1, over_beats * 4)
+        start_bpm = self.config.bpm
+        for i in range(steps):
+            frac = (i + 1) / steps
+            interp_bpm = int(start_bpm + (target_bpm - start_bpm) * frac)
+            step_ms = max(1, round((over_beats / steps) * 60000.0 / interp_bpm))
+            self._events.append(FlatEvent(
+                channel=254, freq=60000 // max(1, interp_bpm), duration_ms=step_ms,
+                is_rest=True, is_bpm_change=True, new_bpm=interp_bpm,
+            ))
+            self.config.bpm = interp_bpm
+        self.config.bpm = target_bpm
+
     def _flatten_arrangement(self, items: list) -> None:
         """Recursively flatten arrangement items into self._events."""
         for item in items:
@@ -283,12 +306,15 @@ class CodeGenerator:
             elif isinstance(item, PlayTogetherBlock):
                 self._flatten_play_together(item)
             elif isinstance(item, BPMChange):
-                self.config.bpm = item.bpm
-                new_ms = 60000 // item.bpm
-                self._events.append(FlatEvent(
-                    channel=254, freq=new_ms, duration_ms=0,
-                    is_rest=True, is_bpm_change=True, new_bpm=item.bpm,
-                ))
+                if item.over_beats and item.over_beats > 0:
+                    self._emit_bpm_ramp(item.bpm, item.over_beats)
+                else:
+                    self.config.bpm = item.bpm
+                    new_ms = 60000 // item.bpm
+                    self._events.append(FlatEvent(
+                        channel=254, freq=new_ms, duration_ms=0,
+                        is_rest=True, is_bpm_change=True, new_bpm=item.bpm,
+                    ))
             elif isinstance(item, VolumeChange):
                 self._events.append(FlatEvent(
                     channel=253, freq=item.volume, duration_ms=0,
@@ -502,12 +528,15 @@ class CodeGenerator:
             elif isinstance(child, PlayTogetherBlock):
                 self._flatten_play_together(child)
             elif isinstance(child, BPMChange):
-                self.config.bpm = child.bpm
-                new_ms = 60000 // child.bpm
-                self._events.append(FlatEvent(
-                    channel=254, freq=new_ms, duration_ms=0,
-                    is_rest=True, is_bpm_change=True, new_bpm=child.bpm,
-                ))
+                if child.over_beats and child.over_beats > 0:
+                    self._emit_bpm_ramp(child.bpm, child.over_beats)
+                else:
+                    self.config.bpm = child.bpm
+                    new_ms = 60000 // child.bpm
+                    self._events.append(FlatEvent(
+                        channel=254, freq=new_ms, duration_ms=0,
+                        is_rest=True, is_bpm_change=True, new_bpm=child.bpm,
+                    ))
             elif isinstance(child, VolumeChange):
                 self._events.append(FlatEvent(
                     channel=253, freq=child.volume, duration_ms=0,
@@ -691,6 +720,18 @@ class CodeGenerator:
                 decay_ms = inst.decay_ms if inst.decay_ms else 600
                 lines.append(f"uint32_t hpNoteOnTime{i} = 0;")
                 lines.append(f"const uint16_t hpDecayMs{i} = {decay_ms};")
+            elif self._is_bell[i]:
+                sin_info = _WAVE_TABLE[WaveType.SIN]
+                lines.append(
+                    f"Oscil<{sin_info.table_size}, MOZZI_AUDIO_RATE> osc{i}({sin_info.data_name});  // fundamental"
+                )
+                lines.append(
+                    f"Oscil<{sin_info.table_size}, MOZZI_AUDIO_RATE> bellH2_{i}({sin_info.data_name});  // 2nd harmonic"
+                )
+                lines.append(
+                    f"Oscil<{sin_info.table_size}, MOZZI_AUDIO_RATE> bellH3_{i}({sin_info.data_name});  // 3rd harmonic"
+                )
+                lines.append(f"uint32_t bellNoteOnTime{i} = 0;")
             else:
                 info = _WAVE_TABLE[inst.wave]
                 lines.append(
@@ -926,6 +967,16 @@ class CodeGenerator:
                 lines.append(f"    // {inst.name} handpan envelope (attack=1, sustain=0)")
                 lines.append(f"    env{i}.setADLevels(255, 200);")
                 lines.append(f"    env{i}.setTimes(1, {decay}, 0, {release});")
+            elif self._is_bell[i]:
+                if adsr:
+                    decay = adsr.decay_ms
+                    release = adsr.release_ms
+                else:
+                    decay = 400
+                    release = 600
+                lines.append(f"    // {inst.name} bell envelope (attack=1)")
+                lines.append(f"    env{i}.setADLevels(255, 200);")
+                lines.append(f"    env{i}.setTimes(1, {decay}, 0, {release});")
             elif adsr:
                 lines.append(f"    // {inst.name} envelope")
                 lines.append(
@@ -1001,6 +1052,13 @@ class CodeGenerator:
                         "    hpNoise0.setFreq((int)freq);",
                         "    hpNoteOnTime0 = mozziMicros();",
                     ]
+                elif self._is_bell[0]:
+                    lines += [
+                        "    osc0.setFreq((int)freq);",
+                        "    bellH2_0.setFreq((int)(freq * 2));",
+                        "    bellH3_0.setFreq((int)(freq * 3));",
+                        "    bellNoteOnTime0 = mozziMicros();",
+                    ]
                 elif self._has_glide and self._instruments[0].glide_ms > 0:
                     lines += [
                         "    if (channelActive[0] && glideMs[0] > 0) {",
@@ -1008,7 +1066,7 @@ class CodeGenerator:
                         "        glideSteps[0] = (uint16_t)((unsigned long)glideMs[0] * MOZZI_CONTROL_RATE / 1000);",
                         "    } else {",
                     ]
-                if not self._is_handpan[0]:
+                if not self._is_handpan[0] and not self._is_bell[0]:
                     if self._drum_tonal[0]:
                         lines += [
                             "    chanBaseFreq[0] = freq;",
@@ -1036,6 +1094,11 @@ class CodeGenerator:
                         lines.append(f"        hpFif{i}.setFreq((int)(freq * 3));")
                         lines.append(f"        hpNoise{i}.setFreq((int)freq);")
                         lines.append(f"        hpNoteOnTime{i} = mozziMicros();")
+                    elif self._is_bell[i]:
+                        lines.append(f"        osc{i}.setFreq((int)freq);")
+                        lines.append(f"        bellH2_{i}.setFreq((int)(freq * 2));")
+                        lines.append(f"        bellH3_{i}.setFreq((int)(freq * 3));")
+                        lines.append(f"        bellNoteOnTime{i} = mozziMicros();")
                     else:
                         if self._has_glide and self._instruments[i].glide_ms > 0:
                             lines.append(f"        if (channelActive[{i}] && glideMs[{i}] > 0) {{")
@@ -1355,6 +1418,20 @@ class CodeGenerator:
                 lines.append(f"        int16_t nAmp{i} = (hpAge{i} < 12000UL) ? 38 : 0;")
                 lines.append(f"        s{i} = (hpF{i} * 255 + hpO{i} * octAmp{i} + hpP{i} * fifAmp{i}")
                 lines.append(f"             + (int16_t)hpNoise{i}.next() * nAmp{i}) >> 8;")
+                lines.append(f"        s{i} = (s{i} * envVal{i}) >> 8;")
+            elif self._is_bell[i]:
+                adsr = inst.adsr
+                decay_ms = adsr.decay_ms if adsr else 400
+                h2_decay_us = int(decay_ms * 0.4 * 1000)
+                h3_decay_us = int(decay_ms * 0.2 * 1000)
+                lines.append(f"        int16_t envVal{i} = (int16_t)env{i}.next();")
+                lines.append(f"        int16_t bF{i} = (int16_t)osc{i}.next();")
+                lines.append(f"        int16_t bH2_{i} = (int16_t)bellH2_{i}.next();")
+                lines.append(f"        int16_t bH3_{i} = (int16_t)bellH3_{i}.next();")
+                lines.append(f"        unsigned long bellAge{i} = mozziMicros() - bellNoteOnTime{i};")
+                lines.append(f"        int16_t h2Amp{i} = (bellAge{i} < {h2_decay_us}UL) ? (int16_t)(120 - (int32_t)120 * bellAge{i} / {h2_decay_us}UL) : 0;")
+                lines.append(f"        int16_t h3Amp{i} = (bellAge{i} < {h3_decay_us}UL) ? (int16_t)(60 - (int32_t)60 * bellAge{i} / {h3_decay_us}UL) : 0;")
+                lines.append(f"        s{i} = (bF{i} * 255 + bH2_{i} * h2Amp{i} + bH3_{i} * h3Amp{i}) >> 8;")
                 lines.append(f"        s{i} = (s{i} * envVal{i}) >> 8;")
             else:
                 lines.append(

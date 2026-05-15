@@ -59,7 +59,7 @@ KEYWORDS: set[str] = {
     # Instrument-kind keywords used as values
     "SYNTH", "DRUM",
     # Waveform keywords used as values
-    "SIN", "SAW", "SQUARE", "TRIANGLE", "NOISE", "PLUCK", "HANDPAN",
+    "SIN", "SAW", "SQUARE", "TRIANGLE", "NOISE", "PLUCK", "HANDPAN", "BELL",
     # Timing / feel
     "SWING", "HUMANIZE",
     # Key / scale
@@ -71,6 +71,8 @@ KEYWORDS: set[str] = {
     "LFO", "PITCH",
     # Unison / chorus
     "VOICES", "DETUNE", "CHORUS",
+    # New features
+    "TIME_SIGNATURE", "LEGATO", "POLYPHONY", "ROOM", "OVER",
     # Velocity curves
     "VELOCITY_CURVE", "CRESCENDO", "DECRESCENDO", "OFF",
 }

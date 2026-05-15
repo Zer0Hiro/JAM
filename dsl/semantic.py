@@ -164,6 +164,18 @@ def validate(program: Program) -> ValidationResult:
             result.warn(f"Instrument '{name}': GLIDE has no effect on HANDPAN synthesis")
         if inst.wave == WaveType.HANDPAN and inst.adsr and inst.adsr.sustain_ms > 0:
             result.warn(f"Instrument '{name}': ADSR sustain ignored for HANDPAN (always 0)")
+        if inst.wave == WaveType.BELL and inst.kind == InstrumentKind.DRUM:
+            result.error(f"Instrument '{name}': BELL waveform only valid for SYNTH")
+        if inst.legato and inst.kind == InstrumentKind.DRUM:
+            result.warn(f"Instrument '{name}': LEGATO has no effect on drum instruments")
+        if inst.polyphony < 1 or inst.polyphony > 8:
+            result.error(f"Instrument '{name}': POLYPHONY must be 1-8")
+        if inst.reverb_decay is not None:
+            if inst.reverb_decay < 100 or inst.reverb_decay > 10000:
+                result.error(f"Instrument '{name}': REVERB DECAY {inst.reverb_decay} out of range 100-10000 ms")
+        if inst.reverb_room is not None:
+            if inst.reverb_room < 0.0 or inst.reverb_room > 1.0:
+                result.error(f"Instrument '{name}': REVERB ROOM {inst.reverb_room} out of range 0.0-1.0")
         # LFO validation
         for lfo, target_name in [(inst.lfo_volume, "VOLUME"), (inst.lfo_pitch, "PITCH")]:
             if lfo is not None:
@@ -218,6 +230,13 @@ def validate(program: Program) -> ValidationResult:
         result.warn(
             f"{synth_count} synth instruments defined — ATmega328 has only 2KB RAM; "
             f"consider using {_MAX_RECOMMENDED_SYNTHS} or fewer"
+        )
+
+    total_polyphony = sum(inst.polyphony for inst in program.instruments.values())
+    if total_polyphony > 8:
+        result.warn(
+            f"Total polyphony across all instruments is {total_polyphony} — "
+            "AVR targets may not have enough RAM (recommended max 8)"
         )
 
     lfo_cutoff_count = sum(
@@ -397,10 +416,22 @@ def validate(program: Program) -> ValidationResult:
                     "— will use default 60Hz",
                     ev.line,
                 )
-            if ev.beat_position < 1 or ev.beat_position > pat.beats_per_bar + 1:
-                result.warn(
-                    f"Pattern '{pat_name}': beat {ev.beat_position} may be outside "
-                    f"the {pat.beats_per_bar}-beat bar",
+            if ev.beat_position > pat.beats_per_bar:
+                if program.config.time_sig_explicit:
+                    result.error(
+                        f"Pattern '{pat_name}': beat {ev.beat_position} exceeds "
+                        f"the {pat.beats_per_bar}-beat bar (set by TIME_SIGNATURE)",
+                        ev.line,
+                    )
+                else:
+                    result.warn(
+                        f"Pattern '{pat_name}': beat {ev.beat_position} exceeds "
+                        f"default 4-beat bar — consider adding TIME_SIGNATURE",
+                        ev.line,
+                    )
+            if ev.beat_position < 1:
+                result.error(
+                    f"Pattern '{pat_name}': beat position must be >= 1",
                     ev.line,
                 )
             if ev.velocity is not None and (ev.velocity < 0 or ev.velocity > 255):
@@ -441,6 +472,14 @@ def validate(program: Program) -> ValidationResult:
             f"AUDIO_RATE {program.config.audio_rate} is non-standard; "
             "Mozzi defaults to 16384 or 32768"
         )
+
+    # --- TIME_SIGNATURE checks ---
+    ts_beats = program.config.time_sig_beats
+    ts_div = program.config.time_sig_division
+    if ts_beats < 1 or ts_beats > 16:
+        result.error(f"TIME_SIGNATURE beats {ts_beats} out of range 1-16")
+    if ts_div not in (1, 2, 4, 8, 16):
+        result.error(f"TIME_SIGNATURE division {ts_div} must be one of 1, 2, 4, 8, 16")
 
     # --- SWING / HUMANIZE checks ---
     if program.config.swing < 0 or program.config.swing > 100:
@@ -599,6 +638,11 @@ def _check_arrangement(
                 result.error("BPM change must be positive", item.line)
             if item.bpm > 300:
                 result.warn(f"BPM {item.bpm} is very fast", item.line)
+            if item.over_beats is not None:
+                if item.over_beats < 1 or item.over_beats > 64:
+                    result.error(f"BPM OVER beats {item.over_beats} out of range 1-64", item.line)
+                if item.over_beats < 2:
+                    result.warn("BPM ramp < 2 beats may sound like a glitch", item.line)
         elif isinstance(item, VolumeChange):
             if item.volume < 0 or item.volume > 255:
                 result.error(f"VOLUME {item.volume} out of range 0-255", item.line)

@@ -25,6 +25,7 @@ class WaveType(Enum):
     NOISE = auto()
     PLUCK = auto()
     HANDPAN = auto()
+    BELL = auto()
 
 
 class ScaleType(Enum):
@@ -78,6 +79,9 @@ class Config:
     humanize: int = 0
     key_root: Optional[str] = None
     key_scale: Optional[ScaleType] = None
+    time_sig_beats: int = 4
+    time_sig_division: int = 4
+    time_sig_explicit: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +137,10 @@ class InstrumentDef:
     voices: int = 1
     detune: int = 0
     chorus: int = 0
+    legato: bool = False
+    polyphony: int = 1
+    reverb_decay: Optional[int] = None
+    reverb_room: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +287,7 @@ class PlayPatternRef:
 class BPMChange:
     """A tempo change within the arrangement."""
     bpm: int = 120
+    over_beats: Optional[int] = None
     line: int = 0
 
 

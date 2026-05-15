@@ -153,6 +153,7 @@ class Parser:
             ParseError: On syntax errors.
         """
         program = Program()
+        self._config = program.config
 
         while self._peek_type() != TokenType.EOF:
             self._skip_newlines()
@@ -169,7 +170,7 @@ class Parser:
                         program.arrangement.append(item)
                     else:
                         self._parse_config(program.config)
-                elif kw in ("SWING", "HUMANIZE", "KEY"):
+                elif kw in ("SWING", "HUMANIZE", "KEY", "TIME_SIGNATURE"):
                     self._parse_config(program.config)
                 elif kw == "VOLUME":
                     item = self._parse_arrangement_item()
@@ -224,6 +225,15 @@ class Parser:
             self._expect(TokenType.NEWLINE)
             return
 
+        if kw.value == "TIME_SIGNATURE":
+            beats_tok = self._expect(TokenType.NUMBER)
+            div_tok = self._expect(TokenType.NUMBER)
+            config.time_sig_beats = int(beats_tok.value)
+            config.time_sig_division = int(div_tok.value)
+            config.time_sig_explicit = True
+            self._expect(TokenType.NEWLINE)
+            return
+
         num_tok = self._expect(TokenType.NUMBER)
         value = int(num_tok.value) if "." not in num_tok.value else int(float(num_tok.value))
 
@@ -250,6 +260,7 @@ class Parser:
         "NOISE": WaveType.NOISE,
         "PLUCK": WaveType.PLUCK,
         "HANDPAN": WaveType.HANDPAN,
+        "BELL": WaveType.BELL,
     }
 
     _SCALE_MAP: dict[str, ScaleType] = {
@@ -333,6 +344,12 @@ class Parser:
             elif kw.value == "REVERB":
                 self._advance()
                 inst.reverb = int(self._expect(TokenType.NUMBER).value)
+                if self._peek_type() == TokenType.KEYWORD and self._peek_value() == "DECAY":
+                    self._advance()
+                    inst.reverb_decay = int(self._expect(TokenType.NUMBER).value)
+                if self._peek_type() == TokenType.KEYWORD and self._peek_value() == "ROOM":
+                    self._advance()
+                    inst.reverb_room = float(self._expect(TokenType.NUMBER).value)
             elif kw.value == "DELAY":
                 self._advance()
                 inst.delay_time_ms = int(self._expect(TokenType.NUMBER).value)
@@ -367,6 +384,12 @@ class Parser:
             elif kw.value == "CHORUS":
                 self._advance()
                 inst.chorus = int(self._expect(TokenType.NUMBER).value)
+            elif kw.value == "LEGATO":
+                self._advance()
+                inst.legato = True
+            elif kw.value == "POLYPHONY":
+                self._advance()
+                inst.polyphony = int(self._expect(TokenType.NUMBER).value)
             else:
                 raise ParseError(f"Unknown instrument property: {kw.value!r}", kw)
 
@@ -508,7 +531,7 @@ class Parser:
         self._expect(TokenType.NEWLINE)
         self._expect(TokenType.INDENT)
 
-        pat = Pattern(name=name_tok.value)
+        pat = Pattern(name=name_tok.value, beats_per_bar=self._config.time_sig_beats)
 
         while self._peek_type() != TokenType.DEDENT:
             self._skip_newlines()
@@ -608,8 +631,12 @@ class Parser:
         elif tok.type == TokenType.KEYWORD and tok.value == "BPM":
             self._advance()
             value = int(self._expect(TokenType.NUMBER).value)
+            over_beats = None
+            if self._peek_type() == TokenType.KEYWORD and self._peek_value() == "OVER":
+                self._advance()
+                over_beats = int(self._expect(TokenType.NUMBER).value)
             self._expect(TokenType.NEWLINE)
-            return BPMChange(bpm=value, line=tok.line)
+            return BPMChange(bpm=value, over_beats=over_beats, line=tok.line)
         elif tok.type == TokenType.KEYWORD and tok.value == "VOLUME":
             self._advance()
             value = int(self._expect(TokenType.NUMBER).value)

@@ -158,6 +158,37 @@ class HandpanSynth:
         return s1 * a1 + s2 * a2 + s3 * a3 + a4
 
 
+class BellSynth:
+    """Additive bell synthesis: sine fundamental + fast-decaying 2nd and 3rd harmonics."""
+
+    def __init__(self, freq: float, decay_ms: int = 400):
+        self.freq = max(20.0, freq)
+        self.phase1 = 0.0
+        self.phase2 = 0.0
+        self.phase3 = 0.0
+        self.decay_s = decay_ms / 1000.0
+        self.h2_decay_s = self.decay_s * 0.4
+        self.h3_decay_s = self.decay_s * 0.2
+        self.sample_idx = 0
+
+    def next_sample(self) -> float:
+        t = self.sample_idx / WAV_SAMPLE_RATE
+        inc1 = self.freq / WAV_SAMPLE_RATE
+        inc2 = (self.freq * 2) / WAV_SAMPLE_RATE
+        inc3 = (self.freq * 3) / WAV_SAMPLE_RATE
+        s1 = math.sin(2.0 * math.pi * self.phase1)
+        s2 = math.sin(2.0 * math.pi * self.phase2)
+        s3 = math.sin(2.0 * math.pi * self.phase3)
+        self.phase1 = (self.phase1 + inc1) % 1.0
+        self.phase2 = (self.phase2 + inc2) % 1.0
+        self.phase3 = (self.phase3 + inc3) % 1.0
+        a1 = 1.0
+        a2 = 0.47 * max(0.0, 1.0 - t / self.h2_decay_s) if t < self.h2_decay_s else 0.0
+        a3 = 0.23 * max(0.0, 1.0 - t / self.h3_decay_s) if t < self.h3_decay_s else 0.0
+        self.sample_idx += 1
+        return s1 * a1 + s2 * a2 + s3 * a3
+
+
 # ---------------------------------------------------------------------------
 # ADSR envelope
 # ---------------------------------------------------------------------------
@@ -317,6 +348,17 @@ class WavRenderer:
                     attack_level=1.0,
                     decay_level=0.8,
                 ))
+            elif inst.wave == WaveType.BELL:
+                decay = (inst.adsr.decay_ms if inst.adsr else 400) / 1000.0
+                release = (inst.adsr.release_ms if inst.adsr else 600) / 1000.0
+                self._envelopes.append(ADSREnvelope(
+                    attack_s=0.001,
+                    decay_s=decay,
+                    sustain_level=0.0,
+                    release_s=release,
+                    attack_level=1.0,
+                    decay_level=0.8,
+                ))
             elif inst.adsr:
                 self._envelopes.append(ADSREnvelope.from_params(inst.adsr))
             elif inst.kind == InstrumentKind.DRUM:
@@ -386,6 +428,11 @@ class WavRenderer:
                     max_voices[bev.instrument] = max(
                         max_voices.get(bev.instrument, 1), len(bev.notes)
                     )
+        for inst_name, inst_def in program.instruments.items():
+            if inst_def.polyphony > 1:
+                max_voices[inst_name] = max(
+                    max_voices.get(inst_name, 1), inst_def.polyphony
+                )
         for inst_name, num_voices in max_voices.items():
             if num_voices <= 1:
                 continue
@@ -423,6 +470,21 @@ class WavRenderer:
         """Convert beats to seconds using current BPM."""
         return beats * 60.0 / self._current_bpm
 
+    def _emit_bpm_ramp(self, target_bpm: int, over_beats: int) -> None:
+        """Emit a gradual BPM ramp as a series of rest events with BPM steps."""
+        steps = max(1, over_beats * 4)
+        start_bpm = self._current_bpm
+        for i in range(steps):
+            frac = (i + 1) / steps
+            interp_bpm = start_bpm + (target_bpm - start_bpm) * frac
+            step_dur_s = (1.0 / steps) * over_beats * 60.0 / interp_bpm
+            self._events.append(WavEvent(
+                inst_index=0, freq=0.0, duration_s=step_dur_s,
+                is_rest=True, advance_s=step_dur_s,
+            ))
+            self._current_bpm = interp_bpm
+        self._current_bpm = target_bpm
+
     def _flatten_arrangement(self, items: list) -> None:
         """Recursively flatten arrangement into WavEvents."""
         for item in items:
@@ -436,7 +498,10 @@ class WavRenderer:
             elif isinstance(item, PlayTogetherBlock):
                 self._flatten_play_together(item)
             elif isinstance(item, BPMChange):
-                self._current_bpm = item.bpm
+                if item.over_beats and item.over_beats > 0:
+                    self._emit_bpm_ramp(item.bpm, item.over_beats)
+                else:
+                    self._current_bpm = item.bpm
             elif isinstance(item, VolumeChange):
                 self._events.append(WavEvent(
                     inst_index=0, freq=0.0, duration_s=0.0,
@@ -643,7 +708,10 @@ class WavRenderer:
             elif isinstance(child, PlayTogetherBlock):
                 self._flatten_play_together(child)
             elif isinstance(child, BPMChange):
-                self._current_bpm = child.bpm
+                if child.over_beats and child.over_beats > 0:
+                    self._emit_bpm_ramp(child.bpm, child.over_beats)
+                else:
+                    self._current_bpm = child.bpm
             elif isinstance(child, VolumeChange):
                 self._events.append(WavEvent(
                     inst_index=0, freq=0.0, duration_s=0.0,
@@ -760,14 +828,21 @@ class WavRenderer:
         _REVERB_TAPS_MS = [30, 50, 80, 113]
         reverb_bufs: dict[int, list[list[float]]] = {}
         reverb_positions: dict[int, list[int]] = {}
+        reverb_feedback: dict[int, float] = {}
         for di, inst in enumerate(self._instruments):
             if inst.reverb > 0:
+                room_scale = inst.reverb_room if inst.reverb_room is not None else 0.5
+                decay_fb = 0.4
+                if inst.reverb_decay is not None:
+                    decay_fb = min(0.85, 0.2 + inst.reverb_decay / 15000.0)
                 bufs = []
                 for tap_ms in _REVERB_TAPS_MS:
-                    tap_len = max(1, int(tap_ms / 1000.0 * WAV_SAMPLE_RATE))
+                    scaled_ms = tap_ms * (0.5 + room_scale * 2.0)
+                    tap_len = max(1, int(scaled_ms / 1000.0 * WAV_SAMPLE_RATE))
                     bufs.append([0.0] * tap_len)
                 reverb_bufs[di] = bufs
                 reverb_positions[di] = [0] * len(_REVERB_TAPS_MS)
+                reverb_feedback[di] = decay_fb
 
         # LPF state per instrument
         lpf_states: dict[int, float] = {}
@@ -897,7 +972,7 @@ class WavRenderer:
                         for tap_i, tap_buf in enumerate(reverb_bufs[di]):
                             tap_pos = reverb_positions[di][tap_i]
                             rev_sum += tap_buf[tap_pos]
-                            tap_buf[tap_pos] = tap_buf[tap_pos] * 0.4
+                            tap_buf[tap_pos] = tap_buf[tap_pos] * reverb_feedback.get(di, 0.4)
                             reverb_positions[di][tap_i] = (tap_pos + 1) % len(tap_buf)
                         sample_val = rev_sum / len(reverb_bufs[di])
                         if self._is_stereo:
@@ -989,8 +1064,10 @@ class WavRenderer:
             m_is_drum_tonal: list[bool] = []
             m_is_pluck: list[bool] = []
             m_is_handpan: list[bool] = []
+            m_is_bell: list[bool] = []
             m_ks: list[Optional[KarplusStrong]] = []
             m_hp_synth: list[Optional[HandpanSynth]] = []
+            m_bell_synth: list[Optional[BellSynth]] = []
             m_hp_alpha: list[float] = []
             m_osc_fn = []
 
@@ -1000,10 +1077,12 @@ class WavRenderer:
                 is_noise = inst_m.wave == WaveType.NOISE
                 is_pluck = inst_m.wave == WaveType.PLUCK and not is_drum
                 is_handpan = inst_m.wave == WaveType.HANDPAN and not is_drum
+                is_bell = inst_m.wave == WaveType.BELL and not is_drum
                 m_is_drum_noise.append(is_drum and is_noise)
                 m_is_drum_tonal.append(is_drum and not is_noise)
                 m_is_pluck.append(is_pluck)
                 m_is_handpan.append(is_handpan)
+                m_is_bell.append(is_bell)
                 if is_pluck:
                     m_ks.append(KarplusStrong(ev_m.freq, inst_m.decay_ms or 0))
                 else:
@@ -1012,6 +1091,11 @@ class WavRenderer:
                     m_hp_synth.append(HandpanSynth(ev_m.freq, inst_m.decay_ms or 600))
                 else:
                     m_hp_synth.append(None)
+                if is_bell:
+                    decay = inst_m.adsr.decay_ms if inst_m.adsr else 400
+                    m_bell_synth.append(BellSynth(ev_m.freq, decay))
+                else:
+                    m_bell_synth.append(None)
                 m_osc_fn.append(_OSCILLATORS.get(inst_m.wave, _sin_sample))
                 if is_drum and is_noise:
                     fc = max(20.0, ev_m.freq)
@@ -1088,6 +1172,8 @@ class WavRenderer:
 
                     if m_is_handpan[m_idx]:
                         osc_val = m_hp_synth[m_idx].next_sample()
+                    elif m_is_bell[m_idx]:
+                        osc_val = m_bell_synth[m_idx].next_sample()
                     elif m_is_pluck[m_idx]:
                         ks = m_ks[m_idx]
                         osc_val = ks.next_sample()
@@ -1159,7 +1245,8 @@ class WavRenderer:
                         for tap_i, tap_buf in enumerate(reverb_bufs[idx]):
                             tap_pos = reverb_positions[idx][tap_i]
                             rev_sum += tap_buf[tap_pos]
-                            tap_buf[tap_pos] = sample_val * 0.3 + tap_buf[tap_pos] * 0.4
+                            fb = reverb_feedback.get(idx, 0.4)
+                            tap_buf[tap_pos] = sample_val * 0.3 + tap_buf[tap_pos] * fb
                             reverb_positions[idx][tap_i] = (tap_pos + 1) % len(tap_buf)
                         sample_val = sample_val * (1.0 - rev_mix) + rev_sum * rev_mix / len(reverb_bufs[idx])
 
@@ -1250,17 +1337,24 @@ class WavRenderer:
                     all_samples.append(sample_i)
 
             # Update sustained notes: advance elapsed, remove finished, add new
+            # For non-legato instruments, cut old sustained notes when new note starts
+            active_inst_ids = set()
+            for ev, idx in active_members:
+                if not self._instruments[idx].legato:
+                    active_inst_ids.add(idx)
             new_sustained = []
             for sn in sustained:
                 sn[3] += advance_s
                 total_note_s = sn[2] + self._envelopes[sn[1]].release_s
-                if sn[3] < total_note_s:
+                if sn[3] < total_note_s and sn[1] not in active_inst_ids:
                     new_sustained.append(sn)
             for m_idx, (ev, idx) in enumerate(active_members):
                 total_with_release = ev.duration_s + self._envelopes[idx].release_s
                 if total_with_release > advance_s + 0.001:
                     if m_is_handpan[m_idx]:
                         new_sustained.append([ev, idx, ev.duration_s, advance_s, phases[m_idx], _sin_sample, m_hp_synth[m_idx]])
+                    elif m_is_bell[m_idx]:
+                        new_sustained.append([ev, idx, ev.duration_s, advance_s, phases[m_idx], _sin_sample, m_bell_synth[m_idx]])
                     else:
                         osc_fn = _OSCILLATORS.get(self._instruments[idx].wave, _sin_sample)
                         new_sustained.append([ev, idx, ev.duration_s, advance_s, phases[m_idx], osc_fn, None])
