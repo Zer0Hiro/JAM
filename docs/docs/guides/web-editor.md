@@ -8,16 +8,25 @@ Use the browser-based editor to write, preview, and upload JAM programs.
 
 ## Setup
 
-Run two terminals:
+Clone with submodules and run two terminals:
+
+```bash
+git clone --recursive https://github.com/Zer0Hiro/JAM-web-edition jamWeb
+cd jamWeb
+```
+
+If already cloned without `--recursive`:
+
+```bash
+git submodule update --init --recursive
+```
 
 ```bash
 # Terminal 1 — Frontend
-cd jamWeb
 npm install
 npm run dev          # http://localhost:5173
 
 # Terminal 2 — Backend
-cd jamWeb
 pip install flask flask-cors
 python3 server/app.py  # http://localhost:5050
 ```
