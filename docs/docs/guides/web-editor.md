@@ -22,11 +22,15 @@ git submodule update --init --recursive
 ```
 
 ```bash
-# Terminal 1 — Frontend
+# Frontend
 npm install
 npm run dev          # http://localhost:5173
+```
 
-# Terminal 2 — Backend
+Play and Compile work entirely in the browser via [Pyodide](https://pyodide.org/) (Python-in-WASM). No backend needed for core features.
+
+```bash
+# Backend (optional — only for ESP32 upload and JAMai chat)
 pip install flask flask-cors
 python3 server/app.py  # http://localhost:5050
 ```
@@ -34,14 +38,14 @@ python3 server/app.py  # http://localhost:5050
 Vite proxies `/api/*` to the Flask backend automatically.
 
 :::info
-Both the frontend and backend must be running simultaneously. The frontend alone cannot compile or preview JAM code.
+The frontend alone handles compilation and preview. The backend is only required for ESP32 hardware upload and the JAMai chat assistant.
 :::
 
 ## Features
 
 ### Live Preview
 
-Write JAM code in the editor and click **Preview** to compile and hear it instantly as WAV audio — no hardware needed.
+Write JAM code in the editor and click **Play** to compile and hear it instantly as WAV audio — no hardware or server needed. The JAM compiler runs directly in your browser via Pyodide (Python compiled to WebAssembly).
 
 ### Compile to C++
 
@@ -63,18 +67,18 @@ A floating chat widget that answers questions about JAM syntax and lessons. Powe
 JAMai runs entirely locally — no API keys or external services needed. It uses keyword-based RAG over the lesson content to answer questions about JAM syntax.
 :::
 
-## API Endpoints
+## API Endpoints (server, optional)
 
 | Endpoint | Method | What it does |
 |----------|--------|-------------|
-| `/api/compile` | POST | Source to C++ + WAV (base64). Max 50KB source |
-| `/api/preview` | POST | Source to WAV only |
 | `/api/upload` | POST | Compile + PlatformIO upload. Accepts `pin` for GPIO |
-| `/api/health` | GET | Status check |
 | `/api/jamai/chat` | POST | RAG chat assistant |
+| `/api/compile` | POST | Source to C++ + WAV (fallback if Pyodide unavailable) |
+| `/api/preview` | POST | Source to WAV only (fallback if Pyodide unavailable) |
+| `/api/health` | GET | Status check |
 
 :::note
-The `/api/compile` endpoint has a 50KB source size limit. For very large compositions, use the CLI compiler directly.
+Compile and preview run client-side by default. The server endpoints are fallback-only. For very large compositions, the CLI compiler may be faster.
 :::
 
 ## Lessons
